@@ -5,33 +5,28 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from datetime import datetime
 
-# Load environment variables from .env file
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Your publicly hosted logo image URL
 LOGO_URL = "https://yourdomain.com/logo.png"
-
-# Discord channel ID where alerts will be sent (integer)
 TARGET_CHANNEL_ID = 1402461253691113584
+PRICE_CHECK_CHANNEL_ID = 1402495298655490088
 
-# Cooldowns
-ALERT_COOLDOWN = 180       # 3 minutes global cooldown (seconds)
-CARD_COOLDOWN = 86400      # 24 hours per-card cooldown (seconds)
+ALERT_COOLDOWN = 180      # 3 minutes
+CARD_COOLDOWN = 86400     # 24 hours
 
-last_alert_time = 0  # Tracks last alert timestamp globally
-last_alerted_cards = {}  # Tracks last alert timestamp per card
+last_alert_time = 0
+last_alerted_cards = {}
 
-# Set up bot intents and prefix
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-def generate_card_alert_embed(card_name, raw_price, graded_price, profit, logo_url):
+def generate_card_embed(card_name, raw_price, graded_price, profit, logo_url, title="Card Info"):
     embed = discord.Embed(
-        title="🔥 Buy Alert!",
-        description=f"**{card_name}** is showing great potential for grading and resale!",
-        color=discord.Color.orange(),
+        title=title,
+        description=f"Here is the price breakdown for **{card_name}**:",
+        color=discord.Color.blue(),
         timestamp=datetime.utcnow()
     )
     embed.add_field(name="🪙 Raw Price", value=f"${raw_price:.2f}", inline=True)
@@ -47,9 +42,9 @@ async def check_card_prices():
 
     current_time = time.time()
     if current_time - last_alert_time < ALERT_COOLDOWN:
-        return  # Global cooldown active
+        return
 
-    # TODO: Replace this mock data with real API calls to fetch card prices
+    # Mock cards, replace with real API calls
     mock_cards = [
         {"name": "Charizard Base Set", "raw": 65.00, "graded": 215.00},
         {"name": "Pikachu Jungle", "raw": 15.00, "graded": 90.00},
@@ -64,13 +59,12 @@ async def check_card_prices():
         card_name = card["name"]
         profit = card["graded"] - card["raw"] - 40  # Example grading fee
 
-        # Check if alerted in last 24 hours
         last_card_alert = last_alerted_cards.get(card_name, 0)
         if current_time - last_card_alert < CARD_COOLDOWN:
-            continue  # Skip alerting this card again too soon
+            continue
 
-        if profit >= 50:  # Alert threshold
-            embed = generate_card_alert_embed(card_name, card["raw"], card["graded"], profit, LOGO_URL)
+        if profit >= 50:
+            embed = generate_card_embed(card_name, card["raw"], card["graded"], profit, LOGO_URL, title="🔥 Buy Alert!")
             role = discord.utils.get(channel.guild.roles, name="Grading Alerts")
 
             if role:
@@ -81,13 +75,12 @@ async def check_card_prices():
             else:
                 msg = await channel.send(embed=embed)
 
-            # Add reactions for user feedback
             await msg.add_reaction("👍")
             await msg.add_reaction("❌")
 
             last_alert_time = current_time
             last_alerted_cards[card_name] = current_time
-            break  # Only send one alert per loop
+            break
 
 @bot.command(name="alerttest")
 async def alert_test(ctx):
@@ -104,7 +97,7 @@ async def alert_test(ctx):
     graded_price = 190.0
     profit = 90.0
 
-    embed = generate_card_alert_embed(card_name, raw_price, graded_price, profit, LOGO_URL)
+    embed = generate_card_embed(card_name, raw_price, graded_price, profit, LOGO_URL, title="🔥 Buy Alert!")
     role = discord.utils.get(ctx.guild.roles, name="Grading Alerts")
 
     if role:
@@ -115,11 +108,40 @@ async def alert_test(ctx):
     else:
         msg = await ctx.send(embed=embed)
 
-    # Add reactions for user feedback
     await msg.add_reaction("👍")
     await msg.add_reaction("❌")
 
     last_alert_time = current_time
+
+@bot.command(name="price")
+async def price_command(ctx, *, card_name: str):
+    """Check prices for a specific card and post in the price-check channel."""
+    mock_data = {
+        "Charizard Base Set": {"raw": 65.00, "graded": 215.00},
+        "Pikachu Jungle": {"raw": 15.00, "graded": 90.00},
+    }
+
+    data = mock_data.get(card_name)
+    if not data:
+        await ctx.send(f"❌ Sorry, no price data found for '{card_name}'.")
+        return
+
+    raw_price = data["raw"]
+    graded_price = data["graded"]
+    profit = graded_price - raw_price - 40  # grading fee example
+
+    embed = generate_card_embed(card_name, raw_price, graded_price, profit, LOGO_URL, title="📊 Price Check")
+
+    price_channel = bot.get_channel(PRICE_CHECK_CHANNEL_ID)
+    if not price_channel:
+        await ctx.send(f"❌ Could not find the price-check channel.")
+        return
+
+    msg = await price_channel.send(embed=embed)
+    await msg.add_reaction("👍")
+    await msg.add_reaction("❌")
+
+    await ctx.send(f"✅ Price info for **{card_name}** posted in {price_channel.mention}.")
 
 @bot.event
 async def on_ready():
