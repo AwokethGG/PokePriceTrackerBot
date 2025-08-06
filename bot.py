@@ -5,18 +5,24 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from datetime import datetime
 
+# Load environment variables from .env file
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-LOGO_URL = "https://yourdomain.com/logo.png"  # Your logo URL
+# Your publicly hosted logo image URL
+LOGO_URL = "https://yourdomain.com/logo.png"
+
+# Discord channel ID where alerts will be sent (integer)
 TARGET_CHANNEL_ID = 1402461253691113584
 
+# Cooldowns
 ALERT_COOLDOWN = 180       # 3 minutes global cooldown (seconds)
 CARD_COOLDOWN = 86400      # 24 hours per-card cooldown (seconds)
 
-last_alert_time = 0  # For global cooldown
-last_alerted_cards = {}  # Dictionary to track last alert time per card
+last_alert_time = 0  # Tracks last alert timestamp globally
+last_alerted_cards = {}  # Tracks last alert timestamp per card
 
+# Set up bot intents and prefix
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -43,6 +49,7 @@ async def check_card_prices():
     if current_time - last_alert_time < ALERT_COOLDOWN:
         return  # Global cooldown active
 
+    # TODO: Replace this mock data with real API calls to fetch card prices
     mock_cards = [
         {"name": "Charizard Base Set", "raw": 65.00, "graded": 215.00},
         {"name": "Pikachu Jungle", "raw": 15.00, "graded": 90.00},
@@ -55,12 +62,12 @@ async def check_card_prices():
 
     for card in mock_cards:
         card_name = card["name"]
-        profit = card["graded"] - card["raw"] - 40  # grading fee example
+        profit = card["graded"] - card["raw"] - 40  # Example grading fee
 
-        # Check if this card was alerted in last 24 hours
+        # Check if alerted in last 24 hours
         last_card_alert = last_alerted_cards.get(card_name, 0)
         if current_time - last_card_alert < CARD_COOLDOWN:
-            continue  # Skip, alerted too recently
+            continue  # Skip alerting this card again too soon
 
         if profit >= 50:  # Alert threshold
             embed = generate_card_alert_embed(card_name, card["raw"], card["graded"], profit, LOGO_URL)
@@ -68,11 +75,15 @@ async def check_card_prices():
 
             if role:
                 try:
-                    await channel.send(content=f"{role.mention} 📢", embed=embed)
+                    msg = await channel.send(content=f"{role.mention} 📢", embed=embed)
                 except discord.Forbidden:
-                    await channel.send(embed=embed)
+                    msg = await channel.send(embed=embed)
             else:
-                await channel.send(embed=embed)
+                msg = await channel.send(embed=embed)
+
+            # Add reactions for user feedback
+            await msg.add_reaction("👍")
+            await msg.add_reaction("❌")
 
             last_alert_time = current_time
             last_alerted_cards[card_name] = current_time
@@ -98,11 +109,15 @@ async def alert_test(ctx):
 
     if role:
         try:
-            await ctx.send(content=f"{role.mention} 📢", embed=embed)
+            msg = await ctx.send(content=f"{role.mention} 📢", embed=embed)
         except discord.Forbidden:
-            await ctx.send(embed=embed)
+            msg = await ctx.send(embed=embed)
     else:
-        await ctx.send(embed=embed)
+        msg = await ctx.send(embed=embed)
+
+    # Add reactions for user feedback
+    await msg.add_reaction("👍")
+    await msg.add_reaction("❌")
 
     last_alert_time = current_time
 
