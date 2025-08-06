@@ -60,8 +60,22 @@ async def check_card_prices():
             embed = generate_card_alert_embed(card["name"], card["raw"], card["graded"], profit, LOGO_URL)
             channel = bot.get_channel(TARGET_CHANNEL_ID)
             if channel:
-                await channel.send(embed=embed)
-                last_alert_time = current_time
+    guild = channel.guild
+    role = discord.utils.get(guild.roles, name="Grading Alerts")
+    
+    if role:
+        await channel.send(content=f"{role.mention} 📢", embed=embed)
+    else:
+        role = discord.utils.get(ctx.guild.roles, name="Grading Alerts")
+
+if role:
+    await ctx.send(content=f"{role.mention} 📢", embed=embed)
+else:
+    await ctx.send(embed=embed)
+
+
+    last_alert_time = current_time
+
             break  # ✅ Only one alert every loop
 
 # ✅ Manual command to trigger test
