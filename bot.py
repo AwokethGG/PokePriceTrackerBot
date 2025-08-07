@@ -13,8 +13,8 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
 EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")
-GRADING_FEE = float(os.getenv("GRADING_FEE", 18.0))  # Default PSA grading fee
-PROFIT_THRESHOLD = float(os.getenv("PROFIT_THRESHOLD", 50.0))  # Min profit to alert
+GRADING_FEE = float(os.getenv("GRADING_FEE", 18.0))
+PROFIT_THRESHOLD = float(os.getenv("PROFIT_THRESHOLD", 50.0))
 
 # Globals
 ebay_access_token = None
@@ -24,10 +24,10 @@ alert_cooldown = 120  # 2 minutes
 
 # Forbidden words to exclude unwanted listings
 FORBIDDEN_WORDS = ["every", "set", "collection", "sealed", "lot"]
-GRADE_TERMS = ["psa", "cgc", "ace", "tag"]
 
 # Bot setup
 intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 def get_ebay_token():
@@ -94,7 +94,9 @@ def fetch_popular_pokemon_cards():
         titles = []
         for item in data.get("itemSummaries", []):
             title = item.get("title", "").lower()
-            if any(word in title for word in FORBIDDEN_WORDS + GRADE_TERMS):
+            if any(word in title for word in FORBIDDEN_WORDS):
+                continue
+            if any(grade in title for grade in ["psa", "cgc", "tag", "ace"]):
                 continue
             titles.append(item["title"])
         return titles
@@ -119,19 +121,44 @@ async def check_card_prices():
     for card in cards:
         raw_price = fetch_price(card)
         psa10_price = fetch_price(f"{card} PSA 10")
+        psa9_price = fetch_price(f"{card} PSA 9")
 
         if raw_price and psa10_price:
-            profit = psa10_price - raw_price - GRADING_FEE
-            if profit >= PROFIT_THRESHOLD and time.time() - last_alert_time > alert_cooldown:
+            profit10 = psa10_price - raw_price - GRADING_FEE
+            if profit10 >= PROFIT_THRESHOLD and time.time() - last_alert_time > alert_cooldown:
                 last_alert_time = time.time()
                 message = (
-                    f"💰 **{card}** looks profitable for PSA 10 grading!\n"
+                    f"💰 **{card}** looks profitable for PSA grading!\n"
                     f"- Raw Price: ${raw_price:.2f}\n"
                     f"- PSA 10 Avg: ${psa10_price:.2f}\n"
+                    f"- PSA 9 Avg: ${psa9_price:.2f if psa9_price else 0.00}\n"
                     f"- Grading Fee: ${GRADING_FEE:.2f}\n"
-                    f"- **Estimated Profit: ${profit:.2f}**"
+                    f"- **Estimated PSA 10 Profit: ${profit10:.2f}**"
                 )
                 await channel.send(message)
+
+@bot.command()
+async def price(ctx, *, card_name: str):
+    await ctx.send(f"🔍 Checking prices for: {card_name}")
+    raw_price = fetch_price(card_name)
+    psa10_price = fetch_price(f"{card_name} PSA 10")
+    psa9_price = fetch_price(f"{card_name} PSA 9")
+
+    if raw_price and psa10_price:
+        profit10 = psa10_price - raw_price - GRADING_FEE
+        profit9 = psa9_price - raw_price - GRADING_FEE if psa9_price else 0
+        message = (
+            f"📊 **{card_name} Price Check**\n"
+            f"- Raw Price: ${raw_price:.2f}\n"
+            f"- PSA 10 Avg: ${psa10_price:.2f}\n"
+            f"- PSA 9 Avg: ${psa9_price:.2f if psa9_price else 0.00}\n"
+            f"- Grading Fee: ${GRADING_FEE:.2f}\n"
+            f"- Estimated PSA 10 Profit: ${profit10:.2f}\n"
+            f"- Estimated PSA 9 Profit: ${profit9:.2f}"
+        )
+        await ctx.send(message)
+    else:
+        await ctx.send("❌ Could not fetch prices for that card.")
 
 @bot.event
 async def on_ready():
