@@ -130,11 +130,12 @@ async def check_card_prices():
             profit10 = psa10_price - raw_price - GRADING_FEE
             if profit10 >= PROFIT_THRESHOLD and time.time() - last_alert_time > alert_cooldown:
                 last_alert_time = time.time()
+                psa9_text = f"${psa9_price:.2f}" if psa9_price else "$0.00"
                 message = (
                     f"💰 **{card}** looks profitable for PSA grading!\n"
                     f"- Raw Price: ${raw_price:.2f}\n"
                     f"- PSA 10 Avg: ${psa10_price:.2f}\n"
-                    f"- PSA 9 Avg: ${psa9_price:.2f if psa9_price else 0.00}\n"
+                    f"- PSA 9 Avg: {psa9_text}\n"
                     f"- Grading Fee: ${GRADING_FEE:.2f}\n"
                     f"- **Estimated PSA 10 Profit: ${profit10:.2f}**"
                 )
@@ -150,11 +151,12 @@ async def price(ctx, *, card_name: str):
     if raw_price and psa10_price:
         profit10 = psa10_price - raw_price - GRADING_FEE
         profit9 = psa9_price - raw_price - GRADING_FEE if psa9_price else 0
+        psa9_text = f"${psa9_price:.2f}" if psa9_price else "$0.00"
         message = (
             f"📊 **{card_name} Price Check**\n"
             f"- Raw Price: ${raw_price:.2f}\n"
             f"- PSA 10 Avg: ${psa10_price:.2f}\n"
-            f"- PSA 9 Avg: ${psa9_price:.2f if psa9_price else 0.00}\n"
+            f"- PSA 9 Avg: {psa9_text}\n"
             f"- Grading Fee: ${GRADING_FEE:.2f}\n"
             f"- Estimated PSA 10 Profit: ${profit10:.2f}\n"
             f"- Estimated PSA 9 Profit: ${profit9:.2f}"
