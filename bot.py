@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import base64
+from datetime import datetime
 
 load_dotenv()
 
@@ -29,9 +30,14 @@ if not EBAY_CLIENT_SECRET:
 GRADING_FEE = float(os.getenv("GRADING_FEE", 18.0))  # Default PSA grading fee
 PROFIT_THRESHOLD = float(os.getenv("PROFIT_THRESHOLD", 50.0))  # Min profit to alert
 
+ALERT_COOLDOWN = 300       # 5 minutes between alerts globally
+CARD_COOLDOWN = 86400      # 24 hours cooldown per card
+
 # Globals
 ebay_access_token = None
 token_expiration = 0
+last_alert_time = 0
+last_alerted_cards = {}
 
 # Bot setup
 intents = discord.Intents.default()
@@ -90,7 +96,12 @@ def fetch_price(query):
         res = requests.get(url, headers=headers, params=params)
         res.raise_for_status()
         items = res.json().get("itemSummaries", [])
-        prices = [float(i["price"]["value"]) for i in items if "price" in i]
+        prices = []
+        for i in items:
+            if "price" in i:
+                price_val = float(i["price"]["value"])
+                if price_val < 150000:  # Exclude unrealistic/very high prices
+                    prices.append(price_val)
         return sum(prices) / len(prices) if prices else None
     except Exception as e:
         print(f"Error fetching eBay data for '{query}':", e)
@@ -122,12 +133,33 @@ def fetch_popular_pokemon_cards():
         return []
 
 
-@tasks.loop(hours=1)
+def generate_card_embed(card_name, raw_price, psa10_price, grading_fee, profit):
+    embed = discord.Embed(
+        title="🔥 Buy Alert! Profitable Pokémon Card Found",
+        description=f"**{card_name}** looks profitable for PSA 10 grading!",
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow()
+    )
+    embed.add_field(name="🪙 Raw Price", value=f"${raw_price:.2f}", inline=True)
+    embed.add_field(name="💎 PSA 10 Price", value=f"${psa10_price:.2f}", inline=True)
+    embed.add_field(name="💰 Grading Fee", value=f"${grading_fee:.2f}", inline=True)
+    embed.add_field(name="📈 Estimated Profit", value=f"${profit:.2f}", inline=False)
+    embed.set_footer(text="PokePriceTrackerBot — Smarter Investing in Pokémon")
+    return embed
+
+
+@tasks.loop(minutes=1)
 async def check_card_prices():
+    global last_alert_time, last_alerted_cards
     print("🔍 Checking card prices...")
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         print("⚠️ Channel not found.")
+        return
+
+    current_time = time.time()
+    if current_time - last_alert_time < ALERT_COOLDOWN:
+        # Still cooling down globally, skip this run
         return
 
     cards = fetch_popular_pokemon_cards()
@@ -139,21 +171,26 @@ async def check_card_prices():
         return
 
     for card in cards:
+        # Skip cards alerted recently
+        last_card_alert = last_alerted_cards.get(card, 0)
+        if current_time - last_card_alert < CARD_COOLDOWN:
+            continue
+
         raw_price = fetch_price(card)
         psa10_price = fetch_price(f"{card} PSA 10")
 
         if raw_price and psa10_price:
             profit = psa10_price - raw_price - GRADING_FEE
             if profit >= PROFIT_THRESHOLD:
-                message = (
-                    f"💰 **{card}** looks profitable for PSA 10 grading!\n"
-                    f"- Raw Price: ${raw_price:.2f}\n"
-                    f"- PSA 10 Avg: ${psa10_price:.2f}\n"
-                    f"- Grading Fee: ${GRADING_FEE:.2f}\n"
-                    f"- **Estimated Profit: ${profit:.2f}**"
-                )
+                embed = generate_card_embed(card, raw_price, psa10_price, GRADING_FEE, profit)
                 try:
-                    await channel.send(message)
+                    msg = await channel.send(embed=embed)
+                    await msg.add_reaction("👍")
+                    await msg.add_reaction("❌")
+                    # Update cooldown trackers
+                    last_alert_time = current_time
+                    last_alerted_cards[card] = current_time
+                    break  # Only one alert per run
                 except Exception as e:
                     print("❌ Failed to send alert message to Discord channel:", e)
 
