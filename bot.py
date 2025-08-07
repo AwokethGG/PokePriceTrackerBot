@@ -8,11 +8,24 @@ import base64
 
 load_dotenv()
 
-# Load environment variables
+# Load environment variables with checks
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
+if not DISCORD_TOKEN:
+    raise ValueError("Missing DISCORD_TOKEN environment variable.")
+
+channel_id_str = os.getenv("DISCORD_CHANNEL_ID")
+if not channel_id_str:
+    raise ValueError("Missing DISCORD_CHANNEL_ID environment variable.")
+CHANNEL_ID = int(channel_id_str)
+
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
+if not EBAY_CLIENT_ID:
+    raise ValueError("Missing EBAY_CLIENT_ID environment variable.")
+
 EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")
+if not EBAY_CLIENT_SECRET:
+    raise ValueError("Missing EBAY_CLIENT_SECRET environment variable.")
+
 GRADING_FEE = float(os.getenv("GRADING_FEE", 18.0))  # Default PSA grading fee
 PROFIT_THRESHOLD = float(os.getenv("PROFIT_THRESHOLD", 50.0))  # Min profit to alert
 
@@ -40,12 +53,17 @@ def get_ebay_token():
         "grant_type": "client_credentials",
         "scope": "https://api.ebay.com/oauth/api_scope"
     }
-    response = requests.post("https://api.ebay.com/identity/v1/oauth2/token", headers=headers, data=data)
-    response.raise_for_status()
-    token_data = response.json()
-    ebay_access_token = token_data["access_token"]
-    token_expiration = time.time() + token_data["expires_in"]
-    print("✅ eBay token acquired.")
+
+    try:
+        response = requests.post("https://api.ebay.com/identity/v1/oauth2/token", headers=headers, data=data)
+        response.raise_for_status()
+        token_data = response.json()
+        ebay_access_token = token_data["access_token"]
+        token_expiration = time.time() + token_data["expires_in"]
+        print("✅ eBay token acquired.")
+    except requests.exceptions.RequestException as e:
+        print("❌ Failed to fetch eBay token:", e)
+        ebay_access_token = None
 
 
 def ensure_token():
@@ -55,6 +73,10 @@ def ensure_token():
 
 def fetch_price(query):
     ensure_token()
+    if not ebay_access_token:
+        print("❌ No valid eBay token available to fetch price.")
+        return None
+
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
     headers = {
         "Authorization": f"Bearer {ebay_access_token}"
@@ -77,6 +99,10 @@ def fetch_price(query):
 
 def fetch_popular_pokemon_cards():
     ensure_token()
+    if not ebay_access_token:
+        print("❌ No valid eBay token available to fetch popular cards.")
+        return []
+
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
     headers = {"Authorization": f"Bearer {ebay_access_token}"}
     params = {
@@ -106,7 +132,10 @@ async def check_card_prices():
 
     cards = fetch_popular_pokemon_cards()
     if not cards:
-        await channel.send("❌ Failed to fetch Pokémon card data from eBay.")
+        try:
+            await channel.send("❌ Failed to fetch Pokémon card data from eBay.")
+        except Exception as e:
+            print("❌ Could not send error message to Discord channel:", e)
         return
 
     for card in cards:
@@ -123,12 +152,16 @@ async def check_card_prices():
                     f"- Grading Fee: ${GRADING_FEE:.2f}\n"
                     f"- **Estimated Profit: ${profit:.2f}**"
                 )
-                await channel.send(message)
+                try:
+                    await channel.send(message)
+                except Exception as e:
+                    print("❌ Failed to send alert message to Discord channel:", e)
 
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     check_card_prices.start()
+
 
 bot.run(DISCORD_TOKEN)
