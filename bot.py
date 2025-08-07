@@ -24,7 +24,7 @@ alert_cooldown = 120  # 2 minutes
 last_alerted_cards = {}  # card_name: timestamp
 
 # Forbidden words to exclude unwanted listings
-FORBIDDEN_WORDS = ["every", "set", "collection", "sealed", "lot"]
+FORBIDDEN_WORDS = ["every", "set", "collection", "sealed", "lot", "cards"]
 FORBIDDEN_GRADES = ["psa", "cgc", "tag", "ace"]
 
 # Bot setup
