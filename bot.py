@@ -21,6 +21,7 @@ ebay_access_token = None
 token_expiration = 0
 last_alert_time = 0
 alert_cooldown = 120  # 2 minutes
+last_alerted_cards = {}  # card_name: timestamp
 
 # Forbidden words to exclude unwanted listings
 FORBIDDEN_WORDS = ["every", "set", "collection", "sealed", "lot"]
@@ -135,7 +136,7 @@ def generate_card_embed(card_name, raw_price, psa10_price, psa9_price):
 
 @tasks.loop(minutes=2)
 async def check_card_prices():
-    global last_alert_time
+    global last_alert_time, last_alerted_cards
     print("🔍 Checking card prices...")
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
@@ -147,7 +148,15 @@ async def check_card_prices():
         await channel.send("❌ Failed to fetch Pokémon card data from eBay.")
         return
 
+    guild = channel.guild
+    role = discord.utils.get(guild.roles, name="Grading Alerts")
+
     for card in cards:
+        # Check 24h cooldown per card
+        last_card_alert = last_alerted_cards.get(card, 0)
+        if time.time() - last_card_alert < 86400:  # 24 hours
+            continue
+
         raw_price = fetch_price(card)
         psa10_price = fetch_price(f"{card} PSA 10")
         psa9_price = fetch_price(f"{card} PSA 9")
@@ -156,8 +165,12 @@ async def check_card_prices():
             profit10 = psa10_price - raw_price - GRADING_FEE
             if profit10 >= PROFIT_THRESHOLD and time.time() - last_alert_time > alert_cooldown:
                 last_alert_time = time.time()
+                last_alerted_cards[card] = time.time()
                 embed = generate_card_embed(card, raw_price, psa10_price, psa9_price)
-                await channel.send(embed=embed)
+                if role:
+                    await channel.send(content=role.mention, embed=embed)
+                else:
+                    await channel.send(embed=embed)
 
 
 @bot.command()
