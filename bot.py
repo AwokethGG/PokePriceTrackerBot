@@ -6,6 +6,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import base64
 from datetime import datetime
+import re
 
 load_dotenv()
 
@@ -80,8 +81,15 @@ def ensure_token():
         get_ebay_token()
 
 
+def contains_forbidden_words(title):
+    """Check if title contains whole words 'every' or 'set' (case-insensitive)."""
+    words = re.findall(r'\b\w+\b', title.lower())
+    forbidden = {"every", "set"}
+    return any(word in forbidden for word in words)
+
+
 def fetch_prices_with_filter(query):
-    """Fetch prices from eBay ignoring listings containing 'every' or 'set' in the title."""
+    """Fetch prices from eBay ignoring listings containing 'every' or 'set' as whole words."""
     ensure_token()
     if not ebay_access_token:
         print("❌ No valid eBay token available to fetch price.")
@@ -102,12 +110,12 @@ def fetch_prices_with_filter(query):
         items = res.json().get("itemSummaries", [])
         prices = []
         for item in items:
-            title = item.get("title", "").lower()
-            if "every" in title or "set" in title:
-                continue  # Skip listings for multiple cards or sets
+            title = item.get("title", "")
+            if contains_forbidden_words(title):
+                continue  # Skip listings with forbidden words
             if "price" in item:
                 price_val = float(item["price"]["value"])
-                if price_val < 150000:  # Exclude very high priced listings
+                if price_val < 150000:
                     prices.append(price_val)
         return sum(prices) / len(prices) if prices else None
     except Exception as e:
@@ -168,6 +176,7 @@ async def check_card_prices():
 
     current_time = time.time()
     if current_time - last_alert_time < ALERT_COOLDOWN:
+        # Skip alerting too soon globally, but keep scanning cards
         return
 
     cards = fetch_popular_pokemon_cards()
@@ -178,6 +187,7 @@ async def check_card_prices():
             print("❌ Could not send error message to Discord channel:", e)
         return
 
+    # Find the first card that qualifies and alert on it, then wait for next loop to find others
     for card in cards:
         last_card_alert = last_alerted_cards.get(card, 0)
         if current_time - last_card_alert < CARD_COOLDOWN:
