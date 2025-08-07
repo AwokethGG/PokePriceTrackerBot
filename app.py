@@ -1,5 +1,10 @@
 from flask import Flask, request, jsonify
 import hashlib
+import os
+
+VERIFICATION_TOKEN = os.getenv("VERIFICATION_TOKEN", "default-token-if-not-set")
+PORT = int(os.getenv("PORT", 8080))
+
 
 app = Flask(__name__)
 
@@ -39,4 +44,4 @@ def ebay_deletion_notify():
 
 if __name__ == '__main__':
     # Run on port 8080 or your desired port
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=PORT)
