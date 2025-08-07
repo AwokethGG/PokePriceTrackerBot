@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import base64
 from datetime import datetime
 import re
+import asyncio
 
 load_dotenv()
 
@@ -88,7 +89,7 @@ def contains_forbidden_words(title):
     return any(word in forbidden for word in words)
 
 
-def fetch_prices_with_filter(query):
+def fetch_prices_with_filter(query, retries=3, delay=1):
     """Fetch prices from eBay ignoring listings containing 'every' or 'set' as whole words."""
     ensure_token()
     if not ebay_access_token:
@@ -104,23 +105,26 @@ def fetch_prices_with_filter(query):
         "limit": "10",
         "filter": "priceCurrency:USD"
     }
-    try:
-        res = requests.get(url, headers=headers, params=params)
-        res.raise_for_status()
-        items = res.json().get("itemSummaries", [])
-        prices = []
-        for item in items:
-            title = item.get("title", "")
-            if contains_forbidden_words(title):
-                continue  # Skip listings with forbidden words
-            if "price" in item:
-                price_val = float(item["price"]["value"])
-                if price_val < 150000:
-                    prices.append(price_val)
-        return sum(prices) / len(prices) if prices else None
-    except Exception as e:
-        print(f"Error fetching eBay data for '{query}':", e)
-        return None
+
+    for attempt in range(retries):
+        try:
+            res = requests.get(url, headers=headers, params=params)
+            res.raise_for_status()
+            items = res.json().get("itemSummaries", [])
+            prices = []
+            for item in items:
+                title = item.get("title", "")
+                if contains_forbidden_words(title):
+                    continue  # Skip listings with forbidden words
+                if "price" in item:
+                    price_val = float(item["price"]["value"])
+                    if price_val < 150000:
+                        prices.append(price_val)
+            return sum(prices) / len(prices) if prices else None
+        except Exception as e:
+            print(f"Attempt {attempt+1} failed fetching eBay data for '{query}':", e)
+            time.sleep(delay)
+    return None
 
 
 def fetch_popular_pokemon_cards():
@@ -137,11 +141,16 @@ def fetch_popular_pokemon_cards():
         "filter": "priceCurrency:USD",
         "sort": "-price"
     }
+
     try:
         res = requests.get(url, headers=headers, params=params)
         res.raise_for_status()
         data = res.json()
-        titles = [item["title"] for item in data.get("itemSummaries", []) if "title" in item]
+        # Filter out cards with forbidden words in the title here too:
+        titles = [
+            item["title"] for item in data.get("itemSummaries", [])
+            if "title" in item and not contains_forbidden_words(item["title"])
+        ]
         return titles
     except Exception as e:
         print("❌ Failed to fetch trending cards:", e)
@@ -231,27 +240,46 @@ async def price_command(ctx, *, card_name: str):
         await ctx.send(f"❌ Please use this command only in <#{PRICE_CHECK_CHANNEL_ID}>.")
         return
 
-    raw_price = fetch_prices_with_filter(card_name)
-    psa10_price = fetch_prices_with_filter(f"{card_name} PSA 10")
-    psa9_price = fetch_prices_with_filter(f"{card_name} PSA 9")
+    # Try fetching prices with retries and partial fallback
+    raw_price = await asyncio.to_thread(fetch_prices_with_filter, card_name)
+    psa10_price = await asyncio.to_thread(fetch_prices_with_filter, f"{card_name} PSA 10")
+    psa9_price = await asyncio.to_thread(fetch_prices_with_filter, f"{card_name} PSA 9")
 
-    if not raw_price or not psa10_price or not psa9_price:
-        await ctx.send(f"❌ Sorry, could not fetch price data for '{card_name}'.")
+    if not raw_price and not psa10_price and not psa9_price:
+        await ctx.send(f"❌ Sorry, could not fetch any price data for '{card_name}'.")
         return
 
-    profit_psa10 = psa10_price - raw_price - GRADING_FEE
-    profit_psa9 = psa9_price - raw_price - GRADING_FEE
+    # Use 0 as fallback to avoid NoneType errors, but notify user of missing data
+    raw_price_val = raw_price if raw_price else 0
+    psa10_price_val = psa10_price if psa10_price else 0
+    psa9_price_val = psa9_price if psa9_price else 0
+
+    profit_psa10 = psa10_price_val - raw_price_val - GRADING_FEE
+    profit_psa9 = psa9_price_val - raw_price_val - GRADING_FEE
 
     embed = generate_card_embed(
         card_name,
-        raw_price,
-        psa10_price,
-        psa9_price,
+        raw_price_val,
+        psa10_price_val,
+        psa9_price_val,
         GRADING_FEE,
         profit_psa10,
         profit_psa9,
         title="📊 Price Check"
     )
+
+    # If some data missing, add a warning in message footer
+    missing_data = []
+    if raw_price is None:
+        missing_data.append("Raw price")
+    if psa10_price is None:
+        missing_data.append("PSA 10 price")
+    if psa9_price is None:
+        missing_data.append("PSA 9 price")
+
+    if missing_data:
+        embed.set_footer(text=f"⚠️ Missing data: {', '.join(missing_data)}")
+
     await ctx.send(embed=embed)
 
 
