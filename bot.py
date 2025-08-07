@@ -17,7 +17,9 @@ if not DISCORD_TOKEN:
 channel_id_str = os.getenv("DISCORD_CHANNEL_ID")
 if not channel_id_str:
     raise ValueError("Missing DISCORD_CHANNEL_ID environment variable.")
-CHANNEL_ID = int(channel_id_str)
+CHANNEL_ID = int(channel_id_str)  # For alerts channel
+
+PRICE_CHECK_CHANNEL_ID = 1402495298655490088  # For !price command outputs
 
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")
 if not EBAY_CLIENT_ID:
@@ -39,8 +41,9 @@ token_expiration = 0
 last_alert_time = 0
 last_alerted_cards = {}
 
-# Bot setup
+# Bot setup with message_content intent for command arguments
 intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -133,11 +136,11 @@ def fetch_popular_pokemon_cards():
         return []
 
 
-def generate_card_embed(card_name, raw_price, psa10_price, grading_fee, profit):
+def generate_card_embed(card_name, raw_price, psa10_price, grading_fee, profit, title="Info"):
     embed = discord.Embed(
-        title="🔥 Buy Alert! Profitable Pokémon Card Found",
-        description=f"**{card_name}** looks profitable for PSA 10 grading!",
-        color=discord.Color.gold(),
+        title=title,
+        description=f"**{card_name}** price details:",
+        color=discord.Color.blue(),
         timestamp=datetime.utcnow()
     )
     embed.add_field(name="🪙 Raw Price", value=f"${raw_price:.2f}", inline=True)
@@ -159,7 +162,6 @@ async def check_card_prices():
 
     current_time = time.time()
     if current_time - last_alert_time < ALERT_COOLDOWN:
-        # Still cooling down globally, skip this run
         return
 
     cards = fetch_popular_pokemon_cards()
@@ -171,7 +173,6 @@ async def check_card_prices():
         return
 
     for card in cards:
-        # Skip cards alerted recently
         last_card_alert = last_alerted_cards.get(card, 0)
         if current_time - last_card_alert < CARD_COOLDOWN:
             continue
@@ -182,17 +183,37 @@ async def check_card_prices():
         if raw_price and psa10_price:
             profit = psa10_price - raw_price - GRADING_FEE
             if profit >= PROFIT_THRESHOLD:
-                embed = generate_card_embed(card, raw_price, psa10_price, GRADING_FEE, profit)
+                embed = generate_card_embed(card, raw_price, psa10_price, GRADING_FEE, profit, title="🔥 Buy Alert!")
                 try:
                     msg = await channel.send(embed=embed)
                     await msg.add_reaction("👍")
                     await msg.add_reaction("❌")
-                    # Update cooldown trackers
                     last_alert_time = current_time
                     last_alerted_cards[card] = current_time
-                    break  # Only one alert per run
+                    break
                 except Exception as e:
                     print("❌ Failed to send alert message to Discord channel:", e)
+
+
+@bot.command(name="price")
+async def price_command(ctx, *, card_name: str):
+    """Check live prices for a specific Pokémon card."""
+
+    # Only allow command to be used in allowed channel
+    if ctx.channel.id != PRICE_CHECK_CHANNEL_ID:
+        await ctx.send(f"❌ Please use this command only in <#{PRICE_CHECK_CHANNEL_ID}>.")
+        return
+
+    raw_price = fetch_price(card_name)
+    psa10_price = fetch_price(f"{card_name} PSA 10")
+
+    if not raw_price or not psa10_price:
+        await ctx.send(f"❌ Sorry, could not fetch price data for '{card_name}'.")
+        return
+
+    profit = psa10_price - raw_price - GRADING_FEE
+    embed = generate_card_embed(card_name, raw_price, psa10_price, GRADING_FEE, profit, title="📊 Price Check")
+    await ctx.send(embed=embed)
 
 
 @bot.event
