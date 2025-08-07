@@ -180,9 +180,9 @@ async def check_card_prices():
         card_name = card["title"]
         card_url = card.get("url")
 
-        # Check 24h cooldown per card
+        # Check 48h cooldown per card
         last_card_alert = last_alerted_cards.get(card_name, 0)
-        if time.time() - last_card_alert < 86400:  # 24 hours
+        if time.time() - last_card_alert < 172800:  # 48 hours
             continue
 
         raw_price = fetch_price(card_name)
