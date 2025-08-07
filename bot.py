@@ -20,7 +20,7 @@ PROFIT_THRESHOLD = float(os.getenv("PROFIT_THRESHOLD", 50.0))
 ebay_access_token = None
 token_expiration = 0
 last_alert_time = 0
-alert_cooldown = 120  # 2 minutes
+alert_cooldown = 600  # 10 minutes
 last_alerted_cards = {}  # card_name: timestamp
 
 # Forbidden words to exclude unwanted listings
