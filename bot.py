@@ -166,9 +166,13 @@ def ebay_deletion_notify():
         print("❌ eBay account deletion verification failed.")
         return "Invalid token", 400
 
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot & Server Running", 200
+
 # Function to run Flask app in a separate thread
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
 
 # Start Flask server in a separate thread so bot and server run simultaneously
 flask_thread = threading.Thread(target=run_flask)
