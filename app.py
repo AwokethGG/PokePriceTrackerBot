@@ -8,17 +8,19 @@ ENDPOINT_PATH = '/ebay-deletion-notify'  # Must match the registered endpoint pa
 @app.route(ENDPOINT_PATH, methods=['GET', 'POST'])
 def ebay_deletion_notify():
     if request.method == 'GET':
-        # Extract the challenge code from query parameters
         challenge_code = request.args.get('challenge_code')
         if not challenge_code:
+            print("❌ Missing challenge_code")
             return "Missing challenge_code", 400
 
-        # Compute SHA-256 hash as hex digest
         to_hash = challenge_code + VERIFICATION_TOKEN + ENDPOINT_PATH
         challenge_response = hashlib.sha256(to_hash.encode('utf-8')).hexdigest()
 
-        # Return JSON with challengeResponse key, status 200, correct content-type
+        print(f"Received challenge_code: {challenge_code}")
+        print(f"Computed challengeResponse: {challenge_response}")
+
         return jsonify({"challengeResponse": challenge_response}), 200
+    # POST handler ...
 
     elif request.method == 'POST':
         # Here handle actual notifications from eBay after verification
