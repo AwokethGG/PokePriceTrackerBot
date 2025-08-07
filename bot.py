@@ -147,3 +147,29 @@ async def on_ready():
     check_card_prices.start()
 
 bot.run(TOKEN)
+
+import threading
+from flask import Flask, request
+import os
+
+# Create Flask app
+flask_app = Flask(__name__)
+VERIFICATION_TOKEN = "gradingbot123securetokenverysecure"  # Use this same token on eBay portal
+
+@flask_app.route('/ebay-deletion-notify', methods=['POST'])
+def ebay_deletion_notify():
+    data = request.json
+    if data.get('verification_token') == VERIFICATION_TOKEN:
+        print("✅ eBay account deletion verification successful.")
+        return "Token verified", 200
+    else:
+        print("❌ eBay account deletion verification failed.")
+        return "Invalid token", 400
+
+# Function to run Flask app in a separate thread
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
+
+# Start Flask server in a separate thread so bot and server run simultaneously
+flask_thread = threading.Thread(target=run_flask)
+flask_thread.start()
