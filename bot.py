@@ -80,7 +80,8 @@ def ensure_token():
         get_ebay_token()
 
 
-def fetch_price(query):
+def fetch_prices_with_filter(query):
+    """Fetch prices from eBay ignoring listings containing 'every' or 'set' in the title."""
     ensure_token()
     if not ebay_access_token:
         print("❌ No valid eBay token available to fetch price.")
@@ -92,7 +93,7 @@ def fetch_price(query):
     }
     params = {
         "q": query,
-        "limit": "5",
+        "limit": "10",
         "filter": "priceCurrency:USD"
     }
     try:
@@ -100,10 +101,13 @@ def fetch_price(query):
         res.raise_for_status()
         items = res.json().get("itemSummaries", [])
         prices = []
-        for i in items:
-            if "price" in i:
-                price_val = float(i["price"]["value"])
-                if price_val < 150000:  # Exclude unrealistic/very high prices
+        for item in items:
+            title = item.get("title", "").lower()
+            if "every" in title or "set" in title:
+                continue  # Skip listings for multiple cards or sets
+            if "price" in item:
+                price_val = float(item["price"]["value"])
+                if price_val < 150000:  # Exclude very high priced listings
                     prices.append(price_val)
         return sum(prices) / len(prices) if prices else None
     except Exception as e:
@@ -136,7 +140,7 @@ def fetch_popular_pokemon_cards():
         return []
 
 
-def generate_card_embed(card_name, raw_price, psa10_price, grading_fee, profit, title="Info"):
+def generate_card_embed(card_name, raw_price, psa10_price, psa9_price, grading_fee, profit_psa10, profit_psa9, title="Info"):
     embed = discord.Embed(
         title=title,
         description=f"**{card_name}** price details:",
@@ -145,8 +149,10 @@ def generate_card_embed(card_name, raw_price, psa10_price, grading_fee, profit, 
     )
     embed.add_field(name="🪙 Raw Price", value=f"${raw_price:.2f}", inline=True)
     embed.add_field(name="💎 PSA 10 Price", value=f"${psa10_price:.2f}", inline=True)
+    embed.add_field(name="🔹 PSA 9 Price", value=f"${psa9_price:.2f}", inline=True)
     embed.add_field(name="💰 Grading Fee", value=f"${grading_fee:.2f}", inline=True)
-    embed.add_field(name="📈 Estimated Profit", value=f"${profit:.2f}", inline=False)
+    embed.add_field(name="📈 Estimated Profit (PSA 10)", value=f"${profit_psa10:.2f}", inline=False)
+    embed.add_field(name="📉 Estimated Profit (PSA 9)", value=f"${profit_psa9:.2f}", inline=False)
     embed.set_footer(text="PokePriceTrackerBot — Smarter Investing in Pokémon")
     return embed
 
@@ -177,13 +183,24 @@ async def check_card_prices():
         if current_time - last_card_alert < CARD_COOLDOWN:
             continue
 
-        raw_price = fetch_price(card)
-        psa10_price = fetch_price(f"{card} PSA 10")
+        raw_price = fetch_prices_with_filter(card)
+        psa10_price = fetch_prices_with_filter(f"{card} PSA 10")
+        psa9_price = fetch_prices_with_filter(f"{card} PSA 9")
 
-        if raw_price and psa10_price:
-            profit = psa10_price - raw_price - GRADING_FEE
-            if profit >= PROFIT_THRESHOLD:
-                embed = generate_card_embed(card, raw_price, psa10_price, GRADING_FEE, profit, title="🔥 Buy Alert!")
+        if raw_price and psa10_price and psa9_price:
+            profit_psa10 = psa10_price - raw_price - GRADING_FEE
+            profit_psa9 = psa9_price - raw_price - GRADING_FEE
+            if profit_psa10 >= PROFIT_THRESHOLD or profit_psa9 >= PROFIT_THRESHOLD:
+                embed = generate_card_embed(
+                    card,
+                    raw_price,
+                    psa10_price,
+                    psa9_price,
+                    GRADING_FEE,
+                    profit_psa10,
+                    profit_psa9,
+                    title="🔥 Buy Alert!"
+                )
                 try:
                     msg = await channel.send(embed=embed)
                     await msg.add_reaction("👍")
@@ -204,15 +221,27 @@ async def price_command(ctx, *, card_name: str):
         await ctx.send(f"❌ Please use this command only in <#{PRICE_CHECK_CHANNEL_ID}>.")
         return
 
-    raw_price = fetch_price(card_name)
-    psa10_price = fetch_price(f"{card_name} PSA 10")
+    raw_price = fetch_prices_with_filter(card_name)
+    psa10_price = fetch_prices_with_filter(f"{card_name} PSA 10")
+    psa9_price = fetch_prices_with_filter(f"{card_name} PSA 9")
 
-    if not raw_price or not psa10_price:
+    if not raw_price or not psa10_price or not psa9_price:
         await ctx.send(f"❌ Sorry, could not fetch price data for '{card_name}'.")
         return
 
-    profit = psa10_price - raw_price - GRADING_FEE
-    embed = generate_card_embed(card_name, raw_price, psa10_price, GRADING_FEE, profit, title="📊 Price Check")
+    profit_psa10 = psa10_price - raw_price - GRADING_FEE
+    profit_psa9 = psa9_price - raw_price - GRADING_FEE
+
+    embed = generate_card_embed(
+        card_name,
+        raw_price,
+        psa10_price,
+        psa9_price,
+        GRADING_FEE,
+        profit_psa10,
+        profit_psa9,
+        title="📊 Price Check"
+    )
     await ctx.send(embed=embed)
 
 
