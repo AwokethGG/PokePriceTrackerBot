@@ -24,6 +24,8 @@ alert_cooldown = 120  # 2 minutes
 
 # Forbidden words to exclude unwanted listings
 FORBIDDEN_WORDS = ["every", "set", "collection", "sealed", "lot"]
+FORBIDDEN_GRADES = ["psa", "cgc", "tag", "ace"]
+KEYWORDS = ["SIR", "SAR", "AR", "IR", "Holo", "SR", "BWR"]
 
 # Bot setup
 intents = discord.Intents.default()
@@ -81,8 +83,9 @@ def fetch_popular_pokemon_cards():
     ensure_token()
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
     headers = {"Authorization": f"Bearer {ebay_access_token}"}
+    keyword_query = " pokemon card " + " ".join(KEYWORDS)
     params = {
-        "q": "pokemon card",
+        "q": keyword_query,
         "limit": "15",
         "filter": "priceCurrency:USD",
         "sort": "-price"
@@ -96,7 +99,7 @@ def fetch_popular_pokemon_cards():
             title = item.get("title", "").lower()
             if any(word in title for word in FORBIDDEN_WORDS):
                 continue
-            if any(grade in title for grade in ["psa", "cgc", "tag", "ace"]):
+            if any(grade in title for grade in FORBIDDEN_GRADES):
                 continue
             titles.append(item["title"])
         return titles
