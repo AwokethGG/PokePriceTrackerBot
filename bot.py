@@ -83,14 +83,14 @@ def ensure_token():
 
 
 def contains_forbidden_words(title):
-    """Check if title contains whole words 'every' or 'set' (case-insensitive)."""
+    """Check if title contains whole words 'every', 'set', or 'collection' (case-insensitive)."""
     words = re.findall(r'\b\w+\b', title.lower())
-    forbidden = {"every", "set"}
+    forbidden = {"every", "set", "collection", "sealed"}
     return any(word in forbidden for word in words)
 
 
 def fetch_prices_with_filter(query, retries=3, delay=1):
-    """Fetch prices from eBay ignoring listings containing 'every' or 'set' as whole words."""
+    """Fetch prices from eBay ignoring listings containing forbidden words."""
     ensure_token()
     if not ebay_access_token:
         print("❌ No valid eBay token available to fetch price.")
