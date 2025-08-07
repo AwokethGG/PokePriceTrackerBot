@@ -97,26 +97,51 @@ def fetch_popular_pokemon_cards():
         res = requests.get(url, headers=headers, params=params)
         res.raise_for_status()
         data = res.json()
-        titles = []
+        cards = []
         for item in data.get("itemSummaries", []):
             title = item.get("title", "").lower()
             if any(word in title for word in FORBIDDEN_WORDS):
                 continue
             if any(grade in title for grade in FORBIDDEN_GRADES):
                 continue
-            titles.append(item["title"])
-        return titles
+            cards.append({
+                "title": item["title"],
+                "url": item.get("itemWebUrl")
+            })
+        return cards
     except Exception as e:
         print("❌ Failed to fetch trending cards:", e)
         return []
 
 
-def generate_card_embed(card_name, raw_price, psa10_price, psa9_price):
+def fetch_first_item_url(query):
+    """Helper to fetch the URL of the first eBay listing for a query."""
+    ensure_token()
+    url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+    headers = {"Authorization": f"Bearer {ebay_access_token}"}
+    params = {
+        "q": query,
+        "limit": "1",
+        "filter": "priceCurrency:USD"
+    }
+    try:
+        res = requests.get(url, headers=headers, params=params)
+        res.raise_for_status()
+        items = res.json().get("itemSummaries", [])
+        if items:
+            return items[0].get("itemWebUrl")
+    except Exception as e:
+        print(f"Error fetching URL for '{query}':", e)
+    return None
+
+
+def generate_card_embed(card_name, raw_price, psa10_price, psa9_price, url=None):
     profit10 = psa10_price - raw_price - GRADING_FEE
     profit9 = psa9_price - raw_price - GRADING_FEE if psa9_price else None
 
     embed = discord.Embed(
         title=f"🔥 Buy Alert: {card_name}",
+        url=url,
         description="Potentially profitable Pokémon card for PSA grading!",
         color=discord.Color.gold(),
         timestamp=discord.utils.utcnow()
@@ -152,21 +177,24 @@ async def check_card_prices():
     role = discord.utils.get(guild.roles, name="Grading Alerts")
 
     for card in cards:
+        card_name = card["title"]
+        card_url = card.get("url")
+
         # Check 24h cooldown per card
-        last_card_alert = last_alerted_cards.get(card, 0)
+        last_card_alert = last_alerted_cards.get(card_name, 0)
         if time.time() - last_card_alert < 86400:  # 24 hours
             continue
 
-        raw_price = fetch_price(card)
-        psa10_price = fetch_price(f"{card} PSA 10")
-        psa9_price = fetch_price(f"{card} PSA 9")
+        raw_price = fetch_price(card_name)
+        psa10_price = fetch_price(f"{card_name} PSA 10")
+        psa9_price = fetch_price(f"{card_name} PSA 9")
 
         if raw_price and psa10_price:
             profit10 = psa10_price - raw_price - GRADING_FEE
             if profit10 >= PROFIT_THRESHOLD and time.time() - last_alert_time > alert_cooldown:
                 last_alert_time = time.time()
-                last_alerted_cards[card] = time.time()
-                embed = generate_card_embed(card, raw_price, psa10_price, psa9_price)
+                last_alerted_cards[card_name] = time.time()
+                embed = generate_card_embed(card_name, raw_price, psa10_price, psa9_price, url=card_url)
                 if role:
                     await channel.send(content=role.mention, embed=embed)
                 else:
@@ -178,9 +206,10 @@ async def price(ctx, *, card_name: str):
     raw_price = fetch_price(card_name)
     psa10_price = fetch_price(f"{card_name} PSA 10")
     psa9_price = fetch_price(f"{card_name} PSA 9")
+    url = fetch_first_item_url(card_name)
 
     if raw_price and psa10_price:
-        embed = generate_card_embed(card_name, raw_price, psa10_price, psa9_price)
+        embed = generate_card_embed(card_name, raw_price, psa10_price, psa9_price, url=url)
         await ctx.send(embed=embed)
     else:
         await ctx.send("❌ Could not fetch prices for that card.")
