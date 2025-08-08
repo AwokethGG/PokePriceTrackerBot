@@ -319,10 +319,10 @@ async def price_check_error(ctx, error):
         logger.error(f"Command error: {error}")
         await ctx.send("❌ An error occurred. Please try again.")
 
-# Simple help command
-@bot.command(name='help')
-async def help_command(ctx):
-    """Show bot help"""
+# Custom info command (since help is reserved)
+@bot.command(name='info')
+async def info_command(ctx):
+    """Show bot information and usage"""
     help_embed = discord.Embed(
         title="🎴 Pokemon Card Price Bot",
         description="Get real-time Pokemon card prices from eBay sold listings!",
@@ -331,7 +331,7 @@ async def help_command(ctx):
     
     help_embed.add_field(
         name="📋 Commands",
-        value="`!price <card name>` - Check card prices\n`!debug` - Check bot status\n`!help` - Show this message",
+        value="`!price <card name>` - Check card prices\n`!debug` - Check bot status\n`!info` - Show this message",
         inline=False
     )
     
