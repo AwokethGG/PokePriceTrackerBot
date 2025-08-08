@@ -5,29 +5,35 @@ from discord.ext import commands
 from datetime import datetime
 from statistics import mean
 from dotenv import load_dotenv
+from urllib.parse import quote_plus
 
-# Load environment variables
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 EBAY_APP_ID = os.getenv("EBAY_APP_ID")
 PRICE_CHECK_CHANNEL_ID = os.getenv("PRICE_CHECK_CHANNEL_ID")
 
-if not TOKEN or not EBAY_APP_ID or not PRICE_CHECK_CHANNEL_ID:
-    raise ValueError("Missing environment variables. Check DISCORD_BOT_TOKEN, EBAY_APP_ID, or PRICE_CHECK_CHANNEL_ID.")
+if not TOKEN or not EBAY_APP_ID:
+    raise ValueError("Missing required environment variables.")
 
-PRICE_CHECK_CHANNEL_ID = int(PRICE_CHECK_CHANNEL_ID)
+PRICE_CHECK_CHANNEL_ID = int(PRICE_CHECK_CHANNEL_ID) if PRICE_CHECK_CHANNEL_ID else None
 
 description = "Pokémon Card Price Checker"
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", description=description, intents=intents)
 
-HEADERS = {"X-EBAY-API-APP-ID": EBAY_APP_ID}
+HEADERS = {
+    "X-EBAY-API-APP-ID": EBAY_APP_ID,
+    "Accept": "application/json"
+}
 FINDING_API_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
 
+def sanitize_query(query):
+    return ''.join(c for c in query if c.isalnum() or c.isspace()).strip()
+
 def ebay_payload(query, condition):
-    keywords = f"{query} {condition}".strip()
+    keywords = sanitize_query(f"{query} {condition}")
     return {
         "OPERATION-NAME": "findCompletedItems",
         "SERVICE-VERSION": "1.13.0",
@@ -38,7 +44,7 @@ def ebay_payload(query, condition):
         "itemFilter(0).name": "SoldItemsOnly",
         "itemFilter(0).value": "true",
         "itemFilter(1).name": "Condition",
-        "itemFilter(1).value": "3000",  # Used condition
+        "itemFilter(1).value": "3000",
         "sortOrder": "EndTimeSoonest",
         "paginationInput.entriesPerPage": "10",
     }
@@ -46,7 +52,7 @@ def ebay_payload(query, condition):
 def filter_results(data, condition):
     try:
         items = data["findCompletedItemsResponse"][0]["searchResult"][0].get("item", [])
-    except (KeyError, IndexError):
+    except Exception:
         return []
 
     results = []
@@ -67,7 +73,7 @@ def extract_info(items):
             price = float(item.get("sellingStatus", [{}])[0].get("currentPrice", [{}])[0].get("__value__", 0))
             image = item.get("galleryURL", [""])[0]
             data.append({"title": title, "url": url, "price": price, "image": image})
-        except (IndexError, ValueError, TypeError):
+        except Exception:
             continue
     return data
 
@@ -84,19 +90,29 @@ async def price(ctx, *, card_name):
         all_data = {}
         for condition in ["raw", "psa 9", "psa 10"]:
             try:
-                async with session.get(FINDING_API_URL, headers=HEADERS, params=ebay_payload(card_name, condition)) as resp:
-                    json_resp = await resp.json()
+                async with session.get(
+                    FINDING_API_URL,
+                    headers=HEADERS,
+                    params=ebay_payload(card_name, condition)
+                ) as resp:
+                    try:
+                        json_resp = await resp.json()
+                    except aiohttp.ContentTypeError:
+                        text = await resp.text()
+                        print(f"eBay response (not JSON):\n{text}")
+                        raise
+
                     filtered = filter_results(json_resp, condition)
                     extracted = extract_info(filtered)
                     all_data[condition] = extracted
             except Exception as e:
-                all_data[condition] = []
                 print(f"Error fetching {condition}: {e}")
+                all_data[condition] = []
 
-        # Set image if available
-        for condition in ["raw", "psa 10", "psa 9"]:
-            if all_data.get(condition):
-                embed.set_thumbnail(url=all_data[condition][0]['image'])
+        # Set thumbnail
+        for key in ["raw", "psa 10", "psa 9"]:
+            if all_data.get(key):
+                embed.set_thumbnail(url=all_data[key][0]["image"])
                 break
 
         raw_prices = [x['price'] for x in all_data.get('raw', [])]
@@ -120,4 +136,3 @@ async def price(ctx, *, card_name):
         await ctx.send(embed=embed)
 
 bot.run(TOKEN)
-
