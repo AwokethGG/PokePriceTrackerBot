@@ -1,125 +1,82 @@
 import os
 import discord
 from discord.ext import commands
-from ebay_api import search_ebay, get_recent_sales
+from ebay_sdk import search_ebay_listings, get_recent_sales
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
 
 load_dotenv()
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
-GUILD_ID = int(os.getenv("DISCORD_GUILD_ID"))
-ROLE_ID = int(os.getenv("DISCORD_ROLE_ID"))  # @Grading Alerts role
+ROLE_ID = int(os.getenv("DISCORD_ROLE_ID"))
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Cache to avoid repeated alerts
-last_alert_times = {}
-ALERT_COOLDOWN = timedelta(hours=24)
+# Filters
+forbidden_words = ["proxy", "custom", "altered", "custom", "Made To Order", "fake", "replica", "playtest", "play test", "test print"]
+keywords = ["sar", "sir", "ar", "ur", "ex", "gx", "v", "vmax", "vstar", "sv"]
+
+# Util: Format recent sales into string
+def format_sales(sales):
+    lines = []
+    for sale in sales:
+        title = sale['title'][:50] + ("..." if len(sale['title']) > 50 else "")
+        price = f"${sale['price']:.2f}"
+        lines.append(f"[{title}]({sale['url']}) - {price}")
+    return lines if lines else ["No recent sales found."]
+
+# Util: Calculate average
+avg = lambda prices: sum(prices) / len(prices) if prices else 0.0
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
+    print(f"Logged in as {bot.user}")
 
-@bot.command()
-async def pricecheck(ctx, *, card_name):
-    card_info = search_ebay(card_name)
-    if not card_info:
-        await ctx.send(f"❌ Could not find any listings for '{card_name}' on eBay.")
+@bot.command(name="price")
+async def price_check(ctx, *, query):
+    listings = search_ebay_listings(query)
+    filtered = [item for item in listings if not any(word in item['title'].lower() for word in forbidden_words)]
+    filtered = [item for item in filtered if any(k in item['title'].lower() for k in keywords)]
+
+    if not filtered:
+        await ctx.send("No valid listings found.")
         return
 
-    raw_sales = get_recent_sales(card_name, 'raw')
-    psa9_sales = get_recent_sales(card_name, 'psa9')
-    psa10_sales = get_recent_sales(card_name, 'psa10')
+    top_result = filtered[0]
 
-    def format_sales(sales):
-        return '\n'.join([
-            f"{sale['date']}: ${sale['price']} — {sale['title']}"
-            for sale in sales[:3]
-        ]) if sales else 'No data.'
+    # Fetch recent sales by category
+    raw_sales = get_recent_sales(query, condition="raw")
+    psa9_sales = get_recent_sales(query, condition="psa9")
+    psa10_sales = get_recent_sales(query, condition="psa10")
 
-    def average_price(sales):
-        if not sales:
-            return 'N/A'
-        total = sum(float(sale['price']) for sale in sales)
-        return f"${total / len(sales):.2f}"
+    raw_avg = avg([s['price'] for s in raw_sales])
+    psa9_avg = avg([s['price'] for s in psa9_sales])
+    psa10_avg = avg([s['price'] for s in psa10_sales])
 
-    embed = discord.Embed(
-        title=f"Price Check: {card_info['title']}",
-        description=f"[{card_info['title']}]({card_info['url']})",
-        color=discord.Color.gold()
-    )
-    embed.set_thumbnail(url=card_info['image'])
-    embed.add_field(name="Average Prices", value=(
-        f"**Raw:** {average_price(raw_sales)}\n"
-        f"**PSA 9:** {average_price(psa9_sales)}\n"
-        f"**PSA 10:** {average_price(psa10_sales)}"
-    ), inline=False)
+    embed = discord.Embed(title=f"Price Check: {top_result['title'][:256]}", url=top_result['url'], color=0x00ff00)
+    embed.set_thumbnail(url=top_result['image'])
 
-    embed.add_field(name="Recent Raw Sales", value=format_sales(raw_sales), inline=False)
-    embed.add_field(name="Recent PSA 9 Sales", value=format_sales(psa9_sales), inline=False)
-    embed.add_field(name="Recent PSA 10 Sales", value=format_sales(psa10_sales), inline=False)
+    embed.add_field(name="Current Lowest Listing", value=f"${top_result['price']:.2f}", inline=False)
+    embed.add_field(name="Average Raw Price", value=f"${raw_avg:.2f}", inline=True)
+    embed.add_field(name="Average PSA 9 Price", value=f"${psa9_avg:.2f}", inline=True)
+    embed.add_field(name="Average PSA 10 Price", value=f"${psa10_avg:.2f}", inline=True)
 
-    embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+    embed.add_field(name="Recent Raw Sales", value="\n".join(format_sales(raw_sales[:3])), inline=False)
+    embed.add_field(name="Recent PSA 9 Sales", value="\n".join(format_sales(psa9_sales[:3])), inline=False)
+    embed.add_field(name="Recent PSA 10 Sales", value="\n".join(format_sales(psa10_sales[:3])), inline=False)
+
     await ctx.send(embed=embed)
 
-@bot.command()
-async def alert(ctx, *, card_name):
-    now = datetime.utcnow()
-    if card_name in last_alert_times:
-        delta = now - last_alert_times[card_name]
-        if delta < ALERT_COOLDOWN:
-            await ctx.send(f"⏳ Alert for '{card_name}' already sent in the past 24 hours.")
-            return
-
-    card_info = search_ebay(card_name)
-    if not card_info:
-        await ctx.send(f"❌ Could not find any listings for '{card_name}' on eBay.")
-        return
-
-    raw_sales = get_recent_sales(card_name, 'raw')
-    psa9_sales = get_recent_sales(card_name, 'psa9')
-    psa10_sales = get_recent_sales(card_name, 'psa10')
-
-    def format_sales(sales):
-        return '\n'.join([
-            f"{sale['date']}: ${sale['price']} — {sale['title']}"
-            for sale in sales[:3]
-        ]) if sales else 'No data.'
-
-    def average_price(sales):
-        if not sales:
-            return 'N/A'
-        total = sum(float(sale['price']) for sale in sales)
-        return f"${total / len(sales):.2f}"
-
-    embed = discord.Embed(
-        title=f"🔥 Grading Alert: {card_info['title']}",
-        description=f"[{card_info['title']}]({card_info['url']})",
-        color=discord.Color.red()
-    )
-    embed.set_thumbnail(url=card_info['image'])
-    embed.add_field(name="Average Prices", value=(
-        f"**Raw:** {average_price(raw_sales)}\n"
-        f"**PSA 9:** {average_price(psa9_sales)}\n"
-        f"**PSA 10:** {average_price(psa10_sales)}"
-    ), inline=False)
-
-    embed.add_field(name="Recent Raw Sales", value=format_sales(raw_sales), inline=False)
-    embed.add_field(name="Recent PSA 9 Sales", value=format_sales(psa9_sales), inline=False)
-    embed.add_field(name="Recent PSA 10 Sales", value=format_sales(psa10_sales), inline=False)
-
-    embed.set_footer(text="PokeBrief TCG - Buy, Grade, Flip")
-
-    channel = bot.get_channel(CHANNEL_ID)
-    role_mention = f"<@&{ROLE_ID}>"
-    await channel.send(content=role_mention, embed=embed)
-
-    last_alert_times[card_name] = now
+@bot.event
+async def on_member_join(member):
+    role = member.guild.get_role(ROLE_ID)
+    if role:
+        await member.add_roles(role)
 
 bot.run(TOKEN)
+
 
