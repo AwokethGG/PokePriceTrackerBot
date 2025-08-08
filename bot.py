@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-EBAY_APP_ID = os.getenv("EBAY_APP_ID")  # Changed from CLIENT_ID
+EBAY_APP_ID = os.getenv("EBAY_APP_ID")
 PRICE_CHECK_CHANNEL_ID = os.getenv("PRICE_CHECK_CHANNEL_ID")
 
 if not TOKEN or not EBAY_APP_ID:
@@ -51,7 +51,7 @@ async def fetch_sold_items(session, query, max_entries=10):
             'RESPONSE-DATA-FORMAT': 'XML',
             'REST-PAYLOAD': '',
             'keywords': query,
-            'categoryId': '183454',  # Pokemon cards category
+            'categoryId': '183454',
             'itemFilter(0).name': 'SoldItemsOnly',
             'itemFilter(0).value': 'true',
             'itemFilter(1).name': 'Condition',
@@ -62,7 +62,7 @@ async def fetch_sold_items(session, query, max_entries=10):
         
         logger.info(f"Searching eBay for: {query}")
         
-        async with session.get(EBAY_FINDING_URL, params=params) as resp:
+        async with session.get(EBAY_FINDING_URL, params=params, timeout=15) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 logger.error(f"eBay API error ({resp.status}): {text}")
@@ -155,71 +155,64 @@ async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Logged in as {bot.user}')
 
+@bot.command(name='test')
+async def simple_test(ctx):
+    """Simple test command that doesn't use eBay API"""
+    await ctx.send("✅ Bot is working! Ready to check card prices.")
+
 @bot.command(name='debug')
 async def debug_command(ctx):
-    """Debug command to check bot status (restrict to bot owner if needed)"""
-    status_embed = discord.Embed(
-        title="🔧 Bot Debug Status",
-        color=0x00ff00,
-        # Fix deprecation warning
-        timestamp=datetime.now(datetime.timezone.utc)
-    )
-    
-    # Check environment variables
-    status_embed.add_field(
-        name="Environment Variables",
-        value=f"Discord Token: {'✅' if TOKEN else '❌'}\n"
-              f"eBay App ID: {'✅' if EBAY_APP_ID else '❌'}\n"
-              f"Channel ID: {'✅' if PRICE_CHECK_CHANNEL_ID else 'Not Set'}",
-        inline=False
-    )
-    
-    # Test eBay API with more detailed logging
+    """Debug command to check bot status"""
     try:
-        async with aiohttp.ClientSession() as session:
-            # Test with minimal request first
-            params = {
-                'OPERATION-NAME': 'findCompletedItems',
-                'SERVICE-VERSION': '1.0.0',
-                'SECURITY-APPNAME': EBAY_APP_ID,
-                'RESPONSE-DATA-FORMAT': 'XML',
-                'REST-PAYLOAD': '',
-                'keywords': 'pokemon',
-                'itemFilter(0).name': 'SoldItemsOnly',
-                'itemFilter(0).value': 'true',
-                'paginationInput.entriesPerPage': '1'
-            }
-            
-            async with session.get(EBAY_FINDING_URL, params=params) as resp:
-                status_code = resp.status
-                response_text = await resp.text()
+        embed = discord.Embed(
+            title="🔧 Bot Debug Status",
+            color=0x00ff00,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Environment variables check
+        embed.add_field(
+            name="Environment Variables",
+            value=f"Discord Token: {'✅' if TOKEN else '❌'}\n"
+                  f"eBay App ID: {'✅' if EBAY_APP_ID else '❌'}\n"
+                  f"Channel ID: {'✅' if PRICE_CHECK_CHANNEL_ID else 'Not Set'}",
+            inline=False
+        )
+        
+        # Simple eBay API test
+        try:
+            async with aiohttp.ClientSession() as session:
+                test_params = {
+                    'OPERATION-NAME': 'findCompletedItems',
+                    'SERVICE-VERSION': '1.0.0',
+                    'SECURITY-APPNAME': EBAY_APP_ID,
+                    'RESPONSE-DATA-FORMAT': 'XML',
+                    'keywords': 'pokemon',
+                    'paginationInput.entriesPerPage': '1'
+                }
                 
-                if status_code == 200:
-                    # Try to parse XML to see if we got actual data
-                    try:
-                        root = ET.fromstring(response_text)
-                        ns = {'ebay': 'http://www.ebay.com/marketplace/search/v1/services'}
-                        search_result = root.find('.//ebay:searchResult', ns)
+                async with session.get(EBAY_FINDING_URL, params=test_params, timeout=10) as resp:
+                    if resp.status == 200:
+                        api_status = "✅ eBay API responding"
+                    elif resp.status == 500:
+                        api_status = "❌ Rate limited (wait 1 hour)"
+                    else:
+                        api_status = f"❌ HTTP {resp.status}"
                         
-                        if search_result is not None:
-                            items = search_result.findall('ebay:item', ns)
-                            ebay_status = f"✅ Connected ({len(items)} test items)"
-                        else:
-                            ebay_status = f"⚠️ Connected but no items found"
-                    except ET.ParseError:
-                        ebay_status = f"⚠️ Connected but XML parse error"
-                else:
-                    ebay_status = f"❌ HTTP {status_code}: {response_text[:100]}"
-                    
+        except asyncio.TimeoutError:
+            api_status = "❌ Connection timeout"
+        except Exception as e:
+            api_status = f"❌ Error: {type(e).__name__}"
+        
+        embed.add_field(name="eBay API Status", value=api_status, inline=False)
+        await ctx.send(embed=embed)
+        
     except Exception as e:
-        ebay_status = f"❌ Error: {str(e)[:100]}"
-    
-    status_embed.add_field(name="eBay API Test", value=ebay_status, inline=False)
-    
-    await ctx.send(embed=status_embed)
+        await ctx.send(f"❌ Debug failed: {str(e)}")
+        logger.error(f"Debug command error: {e}")
 
 @bot.command(name='price')
-@commands.cooldown(1, 30, commands.BucketType.user)
+@commands.cooldown(1, 60, commands.BucketType.user)  # Increased cooldown to 60 seconds
 async def price_check(ctx, *, card_name):
     """Check Pokemon card prices across different conditions"""
     
@@ -248,22 +241,22 @@ async def price_check(ctx, *, card_name):
             embed = discord.Embed(
                 title=f"💰 Price Check: {card_name.title()}",
                 color=0x3498db,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             embed.set_footer(text="Data from eBay Sold Listings • Prices in USD")
             
             all_data = {}
             conditions = ["raw", "psa 9", "psa 10"]
             
-            # Fetch data for each condition with longer delays
-            for condition in conditions:
+            # Fetch data for each condition with longer delays to avoid rate limiting
+            for i, condition in enumerate(conditions):
+                if i > 0:  # Don't delay on first request
+                    await asyncio.sleep(3.0)  # 3 second delay between requests
+                    
                 query = build_query(card_name, condition)
-                items = await fetch_sold_items(session, query, 10)
+                items = await fetch_sold_items(session, query, 5)  # Reduced to 5 items per search
                 filtered_items = filter_items_by_condition(items, condition)
                 all_data[condition] = filtered_items
-                
-                # Longer delay to avoid rate limiting
-                await asyncio.sleep(2.0)
             
             # Set thumbnail (priority: raw > psa 10 > psa 9)
             for cond in ["raw", "psa 10", "psa 9"]:
@@ -338,7 +331,7 @@ async def price_check(ctx, *, card_name):
         logger.error(f"Error in price command: {e}")
         error_embed = discord.Embed(
             title="❌ Error",
-            description=f"Something went wrong while searching for **{card_name}**.\nPlease try again in a moment.",
+            description=f"Something went wrong while searching for **{card_name}**.\nThis might be due to rate limiting. Please try again in an hour.",
             color=0xe74c3c
         )
         await searching_msg.edit(content=None, embed=error_embed)
@@ -364,13 +357,13 @@ async def info_command(ctx):
     
     help_embed.add_field(
         name="📋 Commands",
-        value="`!price <card name>` - Check card prices\n`!debug` - Check bot status\n`!info` - Show this message",
+        value="`!price <card name>` - Check card prices\n`!debug` - Check bot status\n`!test` - Simple bot test\n`!info` - Show this message",
         inline=False
     )
     
     help_embed.add_field(
         name="💡 Tips",
-        value="• Use simple names (e.g., 'Charizard Base Set')\n• Bot shows RAW, PSA 9, and PSA 10 prices\n• Estimated profits include $18 grading fee",
+        value="• Use simple names (e.g., 'Charizard Base Set')\n• Bot shows RAW, PSA 9, and PSA 10 prices\n• Estimated profits include $18 grading fee\n• Wait between searches to avoid rate limits",
         inline=False
     )
     
