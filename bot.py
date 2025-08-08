@@ -29,11 +29,9 @@ HEADERS = {
 }
 FINDING_API_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
 
-def sanitize_query(query):
-    return ''.join(c for c in query if c.isalnum() or c.isspace()).strip()
-
 def ebay_payload(query, condition):
-    keywords = sanitize_query(f"{query} {condition}")
+    # Properly encode keywords including slashes, spaces, etc.
+    keywords = quote_plus(f"{query} {condition}".strip())
     return {
         "OPERATION-NAME": "findCompletedItems",
         "SERVICE-VERSION": "1.13.0",
@@ -43,8 +41,9 @@ def ebay_payload(query, condition):
         "categoryId": "183454",
         "itemFilter(0).name": "SoldItemsOnly",
         "itemFilter(0).value": "true",
-        "itemFilter(1).name": "Condition",
-        "itemFilter(1).value": "3000",
+        # Removed Condition filter to avoid 500 errors
+        # "itemFilter(1).name": "Condition",
+        # "itemFilter(1).value": "3000",
         "sortOrder": "EndTimeSoonest",
         "paginationInput.entriesPerPage": "10",
     }
@@ -99,8 +98,9 @@ async def price(ctx, *, card_name):
                         json_resp = await resp.json()
                     except aiohttp.ContentTypeError:
                         text = await resp.text()
-                        print(f"eBay response (not JSON):\n{text}")
-                        raise
+                        print(f"eBay raw response (not JSON):\n{text}")
+                        all_data[condition] = []
+                        continue
 
                     filtered = filter_results(json_resp, condition)
                     extracted = extract_info(filtered)
@@ -109,7 +109,7 @@ async def price(ctx, *, card_name):
                 print(f"Error fetching {condition}: {e}")
                 all_data[condition] = []
 
-        # Set thumbnail
+        # Set thumbnail image from the first available result in priority order
         for key in ["raw", "psa 10", "psa 9"]:
             if all_data.get(key):
                 embed.set_thumbnail(url=all_data[key][0]["image"])
