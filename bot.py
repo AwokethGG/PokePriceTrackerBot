@@ -4,7 +4,7 @@ import aiohttp
 import asyncio
 import logging
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 from statistics import mean
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
@@ -161,7 +161,8 @@ async def debug_command(ctx):
     status_embed = discord.Embed(
         title="🔧 Bot Debug Status",
         color=0x00ff00,
-        timestamp=datetime.utcnow()
+        # Fix deprecation warning
+        timestamp=datetime.now(datetime.timezone.utc)
     )
     
     # Check environment variables
@@ -173,13 +174,45 @@ async def debug_command(ctx):
         inline=False
     )
     
-    # Test eBay API
+    # Test eBay API with more detailed logging
     try:
         async with aiohttp.ClientSession() as session:
-            test_items = await fetch_sold_items(session, "pikachu", 1)
-            ebay_status = "✅ Connected" if test_items else "⚠️ No results"
+            # Test with minimal request first
+            params = {
+                'OPERATION-NAME': 'findCompletedItems',
+                'SERVICE-VERSION': '1.0.0',
+                'SECURITY-APPNAME': EBAY_APP_ID,
+                'RESPONSE-DATA-FORMAT': 'XML',
+                'REST-PAYLOAD': '',
+                'keywords': 'pokemon',
+                'itemFilter(0).name': 'SoldItemsOnly',
+                'itemFilter(0).value': 'true',
+                'paginationInput.entriesPerPage': '1'
+            }
+            
+            async with session.get(EBAY_FINDING_URL, params=params) as resp:
+                status_code = resp.status
+                response_text = await resp.text()
+                
+                if status_code == 200:
+                    # Try to parse XML to see if we got actual data
+                    try:
+                        root = ET.fromstring(response_text)
+                        ns = {'ebay': 'http://www.ebay.com/marketplace/search/v1/services'}
+                        search_result = root.find('.//ebay:searchResult', ns)
+                        
+                        if search_result is not None:
+                            items = search_result.findall('ebay:item', ns)
+                            ebay_status = f"✅ Connected ({len(items)} test items)"
+                        else:
+                            ebay_status = f"⚠️ Connected but no items found"
+                    except ET.ParseError:
+                        ebay_status = f"⚠️ Connected but XML parse error"
+                else:
+                    ebay_status = f"❌ HTTP {status_code}: {response_text[:100]}"
+                    
     except Exception as e:
-        ebay_status = f"❌ Error: {str(e)[:50]}"
+        ebay_status = f"❌ Error: {str(e)[:100]}"
     
     status_embed.add_field(name="eBay API Test", value=ebay_status, inline=False)
     
@@ -222,15 +255,15 @@ async def price_check(ctx, *, card_name):
             all_data = {}
             conditions = ["raw", "psa 9", "psa 10"]
             
-            # Fetch data for each condition
+            # Fetch data for each condition with longer delays
             for condition in conditions:
                 query = build_query(card_name, condition)
                 items = await fetch_sold_items(session, query, 10)
                 filtered_items = filter_items_by_condition(items, condition)
                 all_data[condition] = filtered_items
                 
-                # Small delay to be respectful to eBay API
-                await asyncio.sleep(0.5)
+                # Longer delay to avoid rate limiting
+                await asyncio.sleep(2.0)
             
             # Set thumbnail (priority: raw > psa 10 > psa 9)
             for cond in ["raw", "psa 10", "psa 9"]:
