@@ -11,6 +11,7 @@ PRICE_CHECK_CHANNEL_ID = int(os.getenv("PRICE_CHECK_CHANNEL_ID"))
 
 description = "Pokémon Card Price Checker"
 intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", description=description, intents=intents)
 
 HEADERS = {"X-EBAY-API-APP-ID": EBAY_APP_ID}
