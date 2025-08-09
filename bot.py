@@ -268,6 +268,105 @@ async def simple_test(ctx):
     """Simple test command"""
     await ctx.send("✅ Bot is working! Ready to check card prices.")
 
+@bot.command(name='sandbox')
+async def test_sandbox(ctx):
+    """Test with Sandbox environment to verify credentials work there"""
+    try:
+        embed = discord.Embed(
+            title="🧪 Sandbox Environment Test",
+            description="Testing authentication with Sandbox environment",
+            color=0xF39C12,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Test with sandbox URLs
+        sandbox_oauth_url = "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
+        
+        import base64
+        auth_string = base64.b64encode(f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}".encode()).decode()
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': f'Basic {auth_string}'
+        }
+        
+        import urllib.parse
+        scope_encoded = urllib.parse.quote('https://api.ebay.com/oauth/api_scope')
+        data = f'grant_type=client_credentials&scope={scope_encoded}'
+        
+        embed.add_field(
+            name="📋 Test Details",
+            value=f"**URL**: `{sandbox_oauth_url}`\n**Environment**: `SANDBOX`\n**Purpose**: Check if credentials work in Sandbox",
+            inline=False
+        )
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(sandbox_oauth_url, headers=headers, data=data, timeout=15) as resp:
+                response_text = await resp.text()
+                
+                if resp.status == 200:
+                    embed.add_field(
+                        name="✅ Sandbox Success",
+                        value="Your credentials work in Sandbox! This suggests:\n• Your credentials are Sandbox credentials\n• You need Production credentials for Production API\n• Check eBay Developer Console for Production keys",
+                        inline=False
+                    )
+                    embed.color = 0x1F8B4C
+                else:
+                    embed.add_field(
+                        name="❌ Sandbox Failed Too",
+                        value=f"Status: {resp.status}\nThis suggests your credentials may be:\n• Invalid/expired\n• From a different eBay account\n• Incorrectly copied",
+                        inline=False
+                    )
+                    embed.color = 0xE74C3C
+                    
+                    # Show error details
+                    embed.add_field(
+                        name="Error Response",
+                        value=f"```{response_text[:400]}```",
+                        inline=False
+                    )
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Sandbox test failed: {str(e)}")
+
+@bot.command(name='appstatus')
+async def check_app_status(ctx):
+    """Instructions for checking app status in eBay Developer Console"""
+    embed = discord.Embed(
+        title="🔍 Check Your eBay App Status",
+        description="Common causes of `invalid_client` error and how to fix them",
+        color=0x2C2F33,
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    embed.add_field(
+        name="🚨 Most Common Causes",
+        value="1. **Wrong Environment**: Using Sandbox credentials with Production API\n2. **App Not Approved**: Production app needs approval\n3. **Missing API Access**: App doesn't have Browse API enabled\n4. **Expired Credentials**: Credentials may have been regenerated",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📝 Step-by-Step Fix",
+        value="1. Go to https://developer.ebay.com/my/keys\n2. Check if you have **both** Sandbox AND Production sections\n3. Verify your **Production** app status shows 'Active'\n4. Ensure 'Browse API' is listed under enabled APIs\n5. Copy the **Production** credentials (not Sandbox)",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="⚠️ Production App Requirements",
+        value="Production apps often require:\n• Business verification\n• API usage justification\n• App review process\n\nIf your Production section is empty or shows 'Pending', your app isn't approved yet.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🧪 Test First",
+        value="Run `!sandbox` to test if your credentials work in Sandbox environment. This will tell us if the issue is environment mismatch.",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
 @bot.command(name='credcheck')
 async def credential_check(ctx):
     """Check credential format and environment matching"""
