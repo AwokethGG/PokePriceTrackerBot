@@ -268,6 +268,60 @@ async def simple_test(ctx):
     """Simple test command"""
     await ctx.send("✅ Bot is working! Ready to check card prices.")
 
+@bot.command(name='credcheck')
+async def credential_check(ctx):
+    """Check credential format and environment matching"""
+    try:
+        embed = discord.Embed(
+            title="🔑 Credential Validation",
+            description="Checking credential format and environment settings",
+            color=0x2C2F33,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Check credential format
+        client_id_format = "✅ Looks correct" if EBAY_CLIENT_ID and len(EBAY_CLIENT_ID) > 10 else "❌ Too short or missing"
+        client_secret_format = "✅ Looks correct" if EBAY_CLIENT_SECRET and len(EBAY_CLIENT_SECRET) > 10 else "❌ Too short or missing"
+        
+        embed.add_field(
+            name="📋 Credential Format Check",
+            value=f"**Client ID Length**: {len(EBAY_CLIENT_ID) if EBAY_CLIENT_ID else 0} chars - {client_id_format}\n**Client Secret Length**: {len(EBAY_CLIENT_SECRET) if EBAY_CLIENT_SECRET else 0} chars - {client_secret_format}",
+            inline=False
+        )
+        
+        # Environment check
+        embed.add_field(
+            name="🌐 Environment Settings",
+            value=f"**Current Environment**: `{EBAY_ENVIRONMENT}`\n**OAuth URL**: `{EBAY_OAUTH_URL}`\n**Browse URL**: `{EBAY_BROWSE_URL}`",
+            inline=False
+        )
+        
+        # Base64 encoding test
+        import base64
+        try:
+            auth_string = base64.b64encode(f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}".encode()).decode()
+            b64_status = f"✅ Success - Length: {len(auth_string)}"
+        except Exception as e:
+            b64_status = f"❌ Error: {str(e)}"
+        
+        embed.add_field(
+            name="🔐 Base64 Encoding Test",
+            value=b64_status,
+            inline=False
+        )
+        
+        # Instructions
+        embed.add_field(
+            name="📝 Quick Checklist",
+            value="1. Go to https://developer.ebay.com/my/keys\n2. Select the right environment (Sandbox/Production)\n3. Copy 'App ID (Client ID)' to EBAY_CLIENT_ID\n4. Copy 'Cert ID (Client Secret)' to EBAY_CLIENT_SECRET\n5. Set EBAY_ENVIRONMENT=PRODUCTION (or SANDBOX)",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Credential check failed: {str(e)}")
+
 @bot.command(name='testauth')
 async def test_auth_detailed(ctx):
     """Detailed OAuth test with inline error reporting"""
