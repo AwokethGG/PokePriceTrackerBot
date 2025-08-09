@@ -7,7 +7,7 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from statistics import mean
 from dotenv import load_dotenv
-import xml.etree.ElementTree as ET
+import json
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-EBAY_APP_ID = os.getenv("EBAY_APP_ID")  # Using App ID for Finding API
+EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")  # Now using Client ID for Browse API
+EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")  # Client Secret for OAuth
 PRICE_CHECK_CHANNEL_ID = os.getenv("PRICE_CHECK_CHANNEL_ID")
 
-if not TOKEN or not EBAY_APP_ID:
-    raise ValueError("Missing required environment variables: DISCORD_BOT_TOKEN and EBAY_APP_ID")
+if not TOKEN or not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
+    raise ValueError("Missing required environment variables: DISCORD_BOT_TOKEN, EBAY_CLIENT_ID, and EBAY_CLIENT_SECRET")
 
 PRICE_CHECK_CHANNEL_ID = int(PRICE_CHECK_CHANNEL_ID) if PRICE_CHECK_CHANNEL_ID else None
 
@@ -29,165 +30,182 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", description=description, intents=intents)
 
-# eBay Finding API endpoint for ACTIVE listings
-EBAY_FINDING_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
+# eBay Browse API endpoints
+EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+
+# Global variable to store OAuth token
+oauth_token = None
+token_expires = None
+
+async def get_oauth_token():
+    """Get OAuth token for eBay Browse API"""
+    global oauth_token, token_expires
+    
+    # Check if we have a valid token
+    if oauth_token and token_expires and datetime.now() < token_expires:
+        return oauth_token
+    
+    try:
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': f'Basic {EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}'
+        }
+        
+        # Convert to base64 for basic auth
+        import base64
+        auth_string = base64.b64encode(f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}".encode()).decode()
+        headers['Authorization'] = f'Basic {auth_string}'
+        
+        data = {
+            'grant_type': 'client_credentials',
+            'scope': 'https://api.ebay.com/oauth/api_scope'
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(EBAY_OAUTH_URL, headers=headers, data=data, timeout=15) as resp:
+                if resp.status == 200:
+                    token_data = await resp.json()
+                    oauth_token = token_data['access_token']
+                    expires_in = token_data.get('expires_in', 3600)
+                    token_expires = datetime.now() + datetime.timedelta(seconds=expires_in - 60)  # Refresh 1 min early
+                    logger.info("Successfully obtained OAuth token")
+                    return oauth_token
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"OAuth error ({resp.status}): {error_text}")
+                    return None
+                    
+    except Exception as e:
+        logger.error(f"Error getting OAuth token: {e}")
+        return None
 
 def build_query(card_name, condition):
     """Build search query for different card conditions"""
     card_name = card_name.replace('"', '').strip()
     
     if condition == "raw":
-        return f'"{card_name}" -psa -cgc -bgs -beckett -graded -authenticated'
+        # For raw cards, exclude grading terms
+        return f"{card_name} pokemon -psa -cgc -bgs -beckett -graded"
     else:
-        return f'"{card_name}" "{condition}"'
+        # For graded cards, include the grade
+        return f"{card_name} pokemon {condition}"
 
-async def fetch_active_items(session, query, max_entries=10):
-    """Fetch active items from eBay Finding API using findItemsAdvanced"""
+async def fetch_browse_items(session, query, max_entries=15):
+    """Fetch items from eBay Browse API"""
     try:
-        params = {
-            'OPERATION-NAME': 'findItemsAdvanced',
-            'SERVICE-VERSION': '1.0.0',
-            'SECURITY-APPNAME': EBAY_APP_ID,
-            'RESPONSE-DATA-FORMAT': 'XML',
-            'REST-PAYLOAD': '',
-            'keywords': query,
-            'categoryId': '183454',  # Pokemon cards category
-            'itemFilter(0).name': 'ListingType',
-            'itemFilter(0).value(0)': 'FixedPrice',
-            'itemFilter(0).value(1)': 'Auction',
-            'itemFilter(1).name': 'Condition',
-            'itemFilter(1).value(0)': 'New',
-            'itemFilter(1).value(1)': 'Used',
-            'itemFilter(1).value(2)': 'Unspecified',
-            'itemFilter(2).name': 'MinPrice',
-            'itemFilter(2).value': '0.50',
-            'itemFilter(2).paramName': 'Currency',
-            'itemFilter(2).paramValue': 'USD',
-            'itemFilter(3).name': 'MaxPrice',
-            'itemFilter(3).value': '10000',
-            'itemFilter(3).paramName': 'Currency',
-            'itemFilter(3).paramValue': 'USD',
-            'sortOrder': 'BestMatch',
-            'paginationInput.entriesPerPage': str(max_entries)
+        token = await get_oauth_token()
+        if not token:
+            logger.error("No valid OAuth token available")
+            return []
+        
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
-        logger.info(f"Searching eBay for active listings: {query}")
+        params = {
+            'q': query,
+            'category_ids': '183454',  # Pokemon cards category
+            'limit': str(max_entries),
+            'sort': 'newlyListed',  # Sort by newest listings
+            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},price:[0.50..10000],conditionIds:{1000|2000|2500|3000|4000|5000|6000}'
+        }
         
-        async with session.get(EBAY_FINDING_URL, params=params, timeout=30) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                logger.error(f"eBay API error ({resp.status}): {text}")
+        logger.info(f"Searching eBay Browse API: {query}")
+        
+        async with session.get(EBAY_BROWSE_URL, headers=headers, params=params, timeout=30) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return parse_browse_response(data)
+            else:
+                error_text = await resp.text()
+                logger.error(f"eBay Browse API error ({resp.status}): {error_text}")
                 return []
-            
-            xml_data = await resp.text()
-            logger.debug(f"eBay response preview: {xml_data[:500]}...")
-            return parse_ebay_response(xml_data)
-            
+                
     except Exception as e:
-        logger.error(f"Error fetching eBay data: {e}")
+        logger.error(f"Error fetching eBay Browse data: {e}")
         return []
 
-def parse_ebay_response(xml_data):
-    """Parse eBay XML response and extract item data"""
+def parse_browse_response(data):
+    """Parse eBay Browse API JSON response"""
     try:
-        root = ET.fromstring(xml_data)
-        
-        # Define namespace
-        ns = {'ebay': 'http://www.ebay.com/marketplace/search/v1/services'}
-        
-        # Check for errors first
-        ack = root.find('.//ebay:ack', ns)
-        if ack is not None and ack.text != 'Success':
-            error_msg = root.find('.//ebay:message', ns)
-            error_text = error_msg.text if error_msg is not None else "Unknown error"
-            logger.error(f"eBay API error: {error_text}")
-            return []
-        
         items = []
-        search_result = root.find('.//ebay:searchResult', ns)
+        item_summaries = data.get('itemSummaries', [])
         
-        if search_result is None:
-            logger.warning("No search results found in XML")
+        if not item_summaries:
+            logger.info("No items found in Browse API response")
             return []
         
-        # Check if there are any items
-        count_elem = search_result.get('count', '0')
-        if count_elem == '0':
-            logger.info("No items found for search")
-            return []
-        
-        for item in search_result.findall('ebay:item', ns):
+        for item in item_summaries:
             try:
-                title_elem = item.find('ebay:title', ns)
-                title = title_elem.text if title_elem is not None else "No Title"
+                title = item.get('title', 'No Title')
+                item_web_url = item.get('itemWebUrl', '')
                 
-                url_elem = item.find('ebay:viewItemURL', ns)
-                url = url_elem.text if url_elem is not None else ""
+                # Get price information
+                price_info = item.get('price', {})
+                price_value = price_info.get('value')
+                currency = price_info.get('currency', 'USD')
                 
-                # Try different price fields for active listings
-                price_elem = item.find('.//ebay:convertedCurrentPrice', ns)
-                if price_elem is None:
-                    price_elem = item.find('.//ebay:currentPrice', ns)
-                if price_elem is None:
-                    # For auctions, might need to check startPrice
-                    price_elem = item.find('.//ebay:startPrice', ns)
-                
-                if price_elem is None:
-                    logger.warning(f"No price found for item: {title}")
+                if not price_value:
                     continue
                 
                 try:
-                    price = float(price_elem.text)
+                    price = float(price_value)
                 except (ValueError, TypeError):
-                    logger.warning(f"Invalid price format: {price_elem.text}")
                     continue
                 
-                currency = price_elem.get('currencyId', 'USD')
-                
-                # Get image
-                image_elem = item.find('.//ebay:galleryURL', ns)
-                if image_elem is None:
-                    image_elem = item.find('.//ebay:imageURL', ns)
-                image = image_elem.text if image_elem is not None else ""
-                
-                # Get listing type
-                listing_type_elem = item.find('.//ebay:listingType', ns)
-                listing_type = listing_type_elem.text if listing_type_elem is not None else "Unknown"
-                
                 # Get shipping cost if available
-                shipping_elem = item.find('.//ebay:shippingServiceCost', ns)
+                shipping_info = item.get('shippingOptions', [])
                 shipping_cost = 0
-                if shipping_elem is not None:
-                    try:
-                        shipping_cost = float(shipping_elem.text)
-                    except (ValueError, TypeError):
-                        shipping_cost = 0
+                if shipping_info:
+                    shipping_cost_info = shipping_info[0].get('shippingCost', {})
+                    if shipping_cost_info:
+                        try:
+                            shipping_cost = float(shipping_cost_info.get('value', 0))
+                        except (ValueError, TypeError):
+                            shipping_cost = 0
                 
                 total_price = price + shipping_cost
+                
+                # Get image
+                image_url = ""
+                if 'image' in item:
+                    image_url = item['image'].get('imageUrl', '')
+                
+                # Get buying options
+                buying_options = item.get('buyingOptions', [])
+                listing_type = 'FixedPrice'
+                if 'AUCTION' in buying_options:
+                    listing_type = 'Auction'
+                
+                # Get condition
+                condition = item.get('condition', 'Unknown')
                 
                 # Only include items with reasonable prices
                 if 0.50 <= total_price <= 10000:
                     items.append({
                         "title": title,
-                        "url": url,
+                        "url": item_web_url,
                         "price": total_price,
                         "base_price": price,
                         "shipping": shipping_cost,
                         "currency": currency,
-                        "image": image,
-                        "listing_type": listing_type
+                        "image": image_url,
+                        "listing_type": listing_type,
+                        "condition": condition
                     })
                     
-            except (ValueError, TypeError, AttributeError) as e:
-                logger.warning(f"Error parsing item: {e}")
+            except Exception as e:
+                logger.warning(f"Error parsing Browse API item: {e}")
                 continue
         
-        logger.info(f"Parsed {len(items)} valid items from eBay response")
+        logger.info(f"Parsed {len(items)} valid items from eBay Browse API")
         return items
         
-    except ET.ParseError as e:
-        logger.error(f"XML parsing error: {e}")
-        logger.debug(f"Problematic XML: {xml_data[:1000]}...")
+    except Exception as e:
+        logger.error(f"Error parsing Browse API response: {e}")
         return []
 
 def filter_items_by_condition(items, condition):
@@ -200,7 +218,7 @@ def filter_items_by_condition(items, condition):
         
         if condition == "raw":
             # Raw cards should NOT have grading keywords
-            grading_keywords = ["psa", "cgc", "bgs", "beckett", "graded", "authenticated", "gem mint"]
+            grading_keywords = ["psa", "cgc", "bgs", "beckett", "graded", "authenticated", "gem mint", "grade"]
             if not any(keyword in title_lower for keyword in grading_keywords):
                 filtered.append(item)
         else:
@@ -214,6 +232,13 @@ def filter_items_by_condition(items, condition):
 async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Logged in as {bot.user}')
+    
+    # Test OAuth token on startup
+    token = await get_oauth_token()
+    if token:
+        print("✅ Successfully connected to eBay Browse API")
+    else:
+        print("❌ Failed to connect to eBay Browse API")
 
 @bot.command(name='test')
 async def simple_test(ctx):
@@ -234,7 +259,8 @@ async def debug_command(ctx):
         # Environment variables check
         env_status = []
         env_status.append(f"{'🟢' if TOKEN else '🔴'} **Discord Token**")
-        env_status.append(f"{'🟢' if EBAY_APP_ID else '🔴'} **eBay App ID**")
+        env_status.append(f"{'🟢' if EBAY_CLIENT_ID else '🔴'} **eBay Client ID**")
+        env_status.append(f"{'🟢' if EBAY_CLIENT_SECRET else '🔴'} **eBay Client Secret**")
         env_status.append(f"{'🟢' if PRICE_CHECK_CHANNEL_ID else '🟡'} **Channel Restriction**")
         
         embed.add_field(
@@ -243,65 +269,48 @@ async def debug_command(ctx):
             inline=True
         )
         
-        # Test eBay Finding API
+        # Test eBay Browse API
         try:
-            async with aiohttp.ClientSession() as session:
-                test_params = {
-                    'OPERATION-NAME': 'findItemsAdvanced',
-                    'SERVICE-VERSION': '1.0.0',
-                    'SECURITY-APPNAME': EBAY_APP_ID,
-                    'RESPONSE-DATA-FORMAT': 'XML',
-                    'keywords': 'pokemon charizard',
-                    'categoryId': '183454',
-                    'paginationInput.entriesPerPage': '5'
-                }
-                
-                async with session.get(EBAY_FINDING_URL, params=test_params, timeout=15) as resp:
-                    if resp.status == 200:
-                        xml_data = await resp.text()
-                        logger.debug(f"Test API response preview: {xml_data[:300]}...")
-                        
-                        # Try to parse to see if we got real data
-                        try:
-                            root = ET.fromstring(xml_data)
-                            ns = {'ebay': 'http://www.ebay.com/marketplace/search/v1/services'}
-                            
-                            # Check for errors
-                            ack = root.find('.//ebay:ack', ns)
-                            if ack is not None and ack.text != 'Success':
-                                error_msg = root.find('.//ebay:message', ns)
-                                error_text = error_msg.text if error_msg is not None else "Unknown error"
-                                api_status = f"❌ API Error: {error_text}"
-                            else:
-                                search_result = root.find('.//ebay:searchResult', ns)
-                                if search_result is not None:
-                                    count = search_result.get('count', '0')
-                                    api_status = f"✅ Finding API working ({count} test items found)"
-                                else:
-                                    api_status = "⚠️ API connected but no search results structure"
-                        except Exception as parse_error:
-                            api_status = f"⚠️ API connected but parse error: {parse_error}"
-                    elif resp.status == 500:
-                        api_status = "❌ Server error (possible rate limit)"
-                    elif resp.status == 403:
-                        api_status = "❌ Access denied - check API key"
-                    else:
-                        text = await resp.text()
-                        api_status = f"❌ HTTP {resp.status}: {text[:100]}"
+            token = await get_oauth_token()
+            if token:
+                # Test API call
+                async with aiohttp.ClientSession() as session:
+                    headers = {
+                        'Authorization': f'Bearer {token}',
+                        'Content-Type': 'application/json',
+                        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+                    }
+                    
+                    params = {
+                        'q': 'pokemon charizard',
+                        'category_ids': '183454',
+                        'limit': '5'
+                    }
+                    
+                    async with session.get(EBAY_BROWSE_URL, headers=headers, params=params, timeout=15) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            item_count = len(data.get('itemSummaries', []))
+                            api_status = f"✅ Browse API working ({item_count} test items)"
+                        else:
+                            error_text = await resp.text()
+                            api_status = f"❌ API Error: HTTP {resp.status}"
+            else:
+                api_status = "❌ OAuth authentication failed"
                         
         except asyncio.TimeoutError:
             api_status = "❌ Connection timeout"
         except Exception as e:
-            api_status = f"❌ Error: {type(e).__name__}: {str(e)[:50]}"
+            api_status = f"❌ Error: {type(e).__name__}"
         
-        embed.add_field(name="🔗 eBay API Status", value=api_status, inline=True)
+        embed.add_field(name="🔗 eBay Browse API", value=api_status, inline=True)
         
         # Add separator
         embed.add_field(name="\u200b", value="\u200b", inline=False)
         
         embed.add_field(
             name="ℹ️ System Info", 
-            value=f"Using eBay Finding API for active market data\nApp ID: {EBAY_APP_ID[:10]}...",
+            value="Using eBay Browse API (Finding API replacement)\nOAuth 2.0 Authentication",
             inline=False
         )
         
@@ -336,7 +345,7 @@ async def price_check(ctx, *, card_name):
     
     # Send initial "searching" message
     searching_embed = discord.Embed(
-        description=f"🔍 Analyzing market data for **{card_name.title()}**...",
+        description=f"🔍 Analyzing market data for **{card_name.title()}**...\n*Using eBay Browse API*",
         color=0x99AAB5
     )
     searching_msg = await ctx.send(embed=searching_embed)
@@ -364,10 +373,10 @@ async def price_check(ctx, *, card_name):
             # Fetch data for each condition
             for i, condition in enumerate(conditions):
                 if i > 0:  # Don't delay on first request
-                    await asyncio.sleep(3.0)  # 3 second delay between requests
+                    await asyncio.sleep(2.0)  # 2 second delay between requests
                     
                 query = build_query(card_name, condition)
-                items = await fetch_active_items(session, query, 8)
+                items = await fetch_browse_items(session, query, 12)
                 filtered_items = filter_items_by_condition(items, condition)
                 all_data[condition] = filtered_items
                 
@@ -386,7 +395,7 @@ async def price_check(ctx, *, card_name):
                 psa9_prices = [x['price'] for x in all_data.get('psa 9', [])]
                 psa10_prices = [x['price'] for x in all_data.get('psa 10', [])]
                 
-                # Add average price fields with better formatting
+                # Add average price fields
                 if raw_prices:
                     avg_raw = mean(raw_prices)
                     min_raw = min(raw_prices)
@@ -401,7 +410,7 @@ async def price_check(ctx, *, card_name):
                     avg_psa9 = mean(psa9_prices)
                     min_psa9 = min(psa9_prices)
                     max_psa9 = max(psa9_prices)
-                    profit9 = (avg_psa9 - mean(raw_prices) - 18) if raw_prices else 0
+                    profit9 = (avg_psa9 - mean(raw_prices) - 20) if raw_prices else 0
                     profit_color = "🟢" if profit9 > 0 else "🔴"
                     embed.add_field(
                         name="🥈 PSA 9",
@@ -413,7 +422,7 @@ async def price_check(ctx, *, card_name):
                     avg_psa10 = mean(psa10_prices)
                     min_psa10 = min(psa10_prices)
                     max_psa10 = max(psa10_prices)
-                    profit10 = (avg_psa10 - mean(raw_prices) - 18) if raw_prices else 0
+                    profit10 = (avg_psa10 - mean(raw_prices) - 20) if raw_prices else 0
                     profit_color = "🟢" if profit10 > 0 else "🔴"
                     embed.add_field(
                         name="🥇 PSA 10",
@@ -424,7 +433,7 @@ async def price_check(ctx, *, card_name):
                 # Add separator line
                 embed.add_field(name="\u200b", value="─────────────────────", inline=False)
                 
-                # Add individual listings with cleaner formatting
+                # Add individual listings
                 for condition, items in all_data.items():
                     if items:
                         listings = []
@@ -453,7 +462,7 @@ async def price_check(ctx, *, card_name):
             else:
                 # Add professional footer
                 embed.set_footer(
-                    text="PokéBrief • Live market data from eBay • Prices include shipping",
+                    text="PokéBrief • Live market data via eBay Browse API • Prices include shipping",
                     icon_url="https://cdn.discordapp.com/emojis/658538492321595392.png"
                 )
             
@@ -464,7 +473,7 @@ async def price_check(ctx, *, card_name):
         logger.error(f"Error in price command: {e}")
         error_embed = discord.Embed(
             title="Service Temporarily Unavailable",
-            description=f"Unable to retrieve market data for **{card_name}** at this time.\n\nThis may be due to API rate limiting. Please try again in a few minutes.",
+            description=f"Unable to retrieve market data for **{card_name}** at this time.\n\nThis may be due to API authentication issues. Please try again in a few minutes.",
             color=0xE74C3C,
             timestamp=datetime.now(timezone.utc)
         )
@@ -485,7 +494,7 @@ async def info_command(ctx):
     """Show bot information and usage"""
     embed = discord.Embed(
         title="🎴 Pokemon Card Price Bot",
-        description="Get current Pokemon card prices from eBay active listings!",
+        description="Get current Pokemon card prices from eBay using the latest Browse API!",
         color=0xf39c12
     )
     
@@ -498,6 +507,12 @@ async def info_command(ctx):
     embed.add_field(
         name="💡 Tips",
         value="• Use simple names (e.g., 'Charizard Base Set')\n• Shows current asking prices from active listings\n• Bot shows RAW, PSA 9, and PSA 10 prices\n• 🔨 = Auction, 💲 = Buy It Now",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🆕 What's New",
+        value="Updated to use eBay's latest Browse API (Finding API was discontinued in Feb 2025)",
         inline=False
     )
     
