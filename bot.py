@@ -268,6 +268,97 @@ async def simple_test(ctx):
     """Simple test command"""
     await ctx.send("✅ Bot is working! Ready to check card prices.")
 
+@bot.command(name='testauth')
+async def test_auth_detailed(ctx):
+    """Detailed OAuth test with inline error reporting"""
+    try:
+        # Test OAuth and capture detailed response
+        import base64
+        auth_string = base64.b64encode(f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}".encode()).decode()
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': f'Basic {auth_string}'
+        }
+        
+        import urllib.parse
+        scope_encoded = urllib.parse.quote('https://api.ebay.com/oauth/api_scope')
+        data = f'grant_type=client_credentials&scope={scope_encoded}'
+        
+        embed = discord.Embed(
+            title="🔍 Detailed OAuth Test",
+            color=0x2C2F33,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        embed.add_field(
+            name="📋 Request Details",
+            value=f"**URL**: `{EBAY_OAUTH_URL}`\n**Scope**: `https://api.ebay.com/oauth/api_scope`\n**Grant Type**: `client_credentials`",
+            inline=False
+        )
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(EBAY_OAUTH_URL, headers=headers, data=data, timeout=15) as resp:
+                response_text = await resp.text()
+                
+                embed.add_field(
+                    name="📊 Response Details",
+                    value=f"**Status Code**: `{resp.status}`\n**Content-Type**: `{resp.headers.get('content-type', 'N/A')}`",
+                    inline=False
+                )
+                
+                if resp.status == 200:
+                    try:
+                        token_data = json.loads(response_text)
+                        token_preview = token_data['access_token'][:30] + "..."
+                        embed.add_field(
+                            name="✅ Success",
+                            value=f"Token: `{token_preview}`\nExpires: `{token_data.get('expires_in')} seconds`",
+                            inline=False
+                        )
+                        embed.color = 0x1F8B4C
+                    except json.JSONDecodeError:
+                        embed.add_field(
+                            name="⚠️ Parse Error",
+                            value=f"Response: ```{response_text[:500]}```",
+                            inline=False
+                        )
+                        embed.color = 0xF39C12
+                else:
+                    # Show the actual error response
+                    embed.add_field(
+                        name="❌ Error Response",
+                        value=f"```json\n{response_text[:800]}```",
+                        inline=False
+                    )
+                    embed.color = 0xE74C3C
+                    
+                    # Try to parse and explain common errors
+                    try:
+                        error_data = json.loads(response_text)
+                        error_type = error_data.get('error', 'unknown')
+                        error_desc = error_data.get('error_description', 'No description')
+                        
+                        common_fixes = {
+                            'invalid_client': '• Check your Client ID and Client Secret\n• Ensure credentials match the environment (Sandbox vs Production)',
+                            'invalid_scope': '• Your app may not have Browse API access\n• Check your app permissions in Developer Console',
+                            'unauthorized_client': '• Your app may not be approved for this environment\n• Check app status in Developer Console'
+                        }
+                        
+                        if error_type in common_fixes:
+                            embed.add_field(
+                                name="💡 Likely Fix",
+                                value=common_fixes[error_type],
+                                inline=False
+                            )
+                    except:
+                        pass
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Test failed: {str(e)}")
+
 @bot.command(name='oauth')
 async def oauth_debug(ctx):
     """Debug OAuth authentication specifically"""
@@ -292,13 +383,13 @@ async def oauth_debug(ctx):
             inline=False
         )
         
-        # Test OAuth
-        token = await get_oauth_token()
-        if token:
-            token_preview = f"`{token[:20]}...`"
+        # Test OAuth with detailed error reporting
+        token_result = await get_oauth_token()
+        if token_result:
+            token_preview = f"`{token_result[:20]}...`"
             oauth_status = f"✅ **Success**\nToken: {token_preview}"
         else:
-            oauth_status = "❌ **Failed** - Check logs for details"
+            oauth_status = "❌ **Failed** - Run this command again to see detailed error info"
         
         embed.add_field(
             name="🔐 OAuth Token Test",
