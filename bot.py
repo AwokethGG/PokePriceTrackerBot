@@ -45,7 +45,7 @@ async def fetch_active_items(session, query, max_entries=10):
     """Fetch active items from eBay Finding API using findItemsAdvanced"""
     try:
         params = {
-            'OPERATION-NAME': 'findItemsAdvanced',  # Changed from findCompletedItems
+            'OPERATION-NAME': 'findItemsAdvanced',
             'SERVICE-VERSION': '1.0.0',
             'SECURITY-APPNAME': EBAY_APP_ID,
             'RESPONSE-DATA-FORMAT': 'XML',
@@ -53,25 +53,34 @@ async def fetch_active_items(session, query, max_entries=10):
             'keywords': query,
             'categoryId': '183454',  # Pokemon cards category
             'itemFilter(0).name': 'ListingType',
-            'itemFilter(0).value(0)': 'FixedPrice',  # Buy It Now listings
-            'itemFilter(0).value(1)': 'Auction',     # Auction listings
+            'itemFilter(0).value(0)': 'FixedPrice',
+            'itemFilter(0).value(1)': 'Auction',
             'itemFilter(1).name': 'Condition',
             'itemFilter(1).value(0)': 'New',
             'itemFilter(1).value(1)': 'Used',
             'itemFilter(1).value(2)': 'Unspecified',
+            'itemFilter(2).name': 'MinPrice',
+            'itemFilter(2).value': '0.50',
+            'itemFilter(2).paramName': 'Currency',
+            'itemFilter(2).paramValue': 'USD',
+            'itemFilter(3).name': 'MaxPrice',
+            'itemFilter(3).value': '10000',
+            'itemFilter(3).paramName': 'Currency',
+            'itemFilter(3).paramValue': 'USD',
             'sortOrder': 'BestMatch',
             'paginationInput.entriesPerPage': str(max_entries)
         }
         
         logger.info(f"Searching eBay for active listings: {query}")
         
-        async with session.get(EBAY_FINDING_URL, params=params, timeout=15) as resp:
+        async with session.get(EBAY_FINDING_URL, params=params, timeout=30) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 logger.error(f"eBay API error ({resp.status}): {text}")
                 return []
             
             xml_data = await resp.text()
+            logger.debug(f"eBay response preview: {xml_data[:500]}...")
             return parse_ebay_response(xml_data)
             
     except Exception as e:
@@ -86,6 +95,14 @@ def parse_ebay_response(xml_data):
         # Define namespace
         ns = {'ebay': 'http://www.ebay.com/marketplace/search/v1/services'}
         
+        # Check for errors first
+        ack = root.find('.//ebay:ack', ns)
+        if ack is not None and ack.text != 'Success':
+            error_msg = root.find('.//ebay:message', ns)
+            error_text = error_msg.text if error_msg is not None else "Unknown error"
+            logger.error(f"eBay API error: {error_text}")
+            return []
+        
         items = []
         search_result = root.find('.//ebay:searchResult', ns)
         
@@ -93,23 +110,38 @@ def parse_ebay_response(xml_data):
             logger.warning("No search results found in XML")
             return []
         
+        # Check if there are any items
+        count_elem = search_result.get('count', '0')
+        if count_elem == '0':
+            logger.info("No items found for search")
+            return []
+        
         for item in search_result.findall('ebay:item', ns):
             try:
-                title = item.find('ebay:title', ns)
-                title = title.text if title is not None else "No Title"
+                title_elem = item.find('ebay:title', ns)
+                title = title_elem.text if title_elem is not None else "No Title"
                 
-                url = item.find('ebay:viewItemURL', ns)
-                url = url.text if url is not None else ""
+                url_elem = item.find('ebay:viewItemURL', ns)
+                url = url_elem.text if url_elem is not None else ""
                 
                 # Try different price fields for active listings
                 price_elem = item.find('.//ebay:convertedCurrentPrice', ns)
                 if price_elem is None:
                     price_elem = item.find('.//ebay:currentPrice', ns)
+                if price_elem is None:
+                    # For auctions, might need to check startPrice
+                    price_elem = item.find('.//ebay:startPrice', ns)
                 
                 if price_elem is None:
+                    logger.warning(f"No price found for item: {title}")
                     continue
                 
-                price = float(price_elem.text)
+                try:
+                    price = float(price_elem.text)
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid price format: {price_elem.text}")
+                    continue
+                
                 currency = price_elem.get('currencyId', 'USD')
                 
                 # Get image
@@ -118,16 +150,29 @@ def parse_ebay_response(xml_data):
                     image_elem = item.find('.//ebay:imageURL', ns)
                 image = image_elem.text if image_elem is not None else ""
                 
-                # Get listing type (auction vs buy it now)
+                # Get listing type
                 listing_type_elem = item.find('.//ebay:listingType', ns)
                 listing_type = listing_type_elem.text if listing_type_elem is not None else "Unknown"
                 
+                # Get shipping cost if available
+                shipping_elem = item.find('.//ebay:shippingServiceCost', ns)
+                shipping_cost = 0
+                if shipping_elem is not None:
+                    try:
+                        shipping_cost = float(shipping_elem.text)
+                    except (ValueError, TypeError):
+                        shipping_cost = 0
+                
+                total_price = price + shipping_cost
+                
                 # Only include items with reasonable prices
-                if 0.50 <= price <= 10000:
+                if 0.50 <= total_price <= 10000:
                     items.append({
                         "title": title,
                         "url": url,
-                        "price": price,
+                        "price": total_price,
+                        "base_price": price,
+                        "shipping": shipping_cost,
                         "currency": currency,
                         "image": image,
                         "listing_type": listing_type
@@ -142,6 +187,7 @@ def parse_ebay_response(xml_data):
         
     except ET.ParseError as e:
         logger.error(f"XML parsing error: {e}")
+        logger.debug(f"Problematic XML: {xml_data[:1000]}...")
         return []
 
 def filter_items_by_condition(items, condition):
@@ -154,7 +200,7 @@ def filter_items_by_condition(items, condition):
         
         if condition == "raw":
             # Raw cards should NOT have grading keywords
-            grading_keywords = ["psa", "cgc", "bgs", "beckett", "graded", "authenticated", "tag", "ace"]
+            grading_keywords = ["psa", "cgc", "bgs", "beckett", "graded", "authenticated", "gem mint"]
             if not any(keyword in title_lower for keyword in grading_keywords):
                 filtered.append(item)
         else:
@@ -197,7 +243,7 @@ async def debug_command(ctx):
             inline=True
         )
         
-        # Test eBay Finding API with findItemsAdvanced
+        # Test eBay Finding API
         try:
             async with aiohttp.ClientSession() as session:
                 test_params = {
@@ -205,35 +251,48 @@ async def debug_command(ctx):
                     'SERVICE-VERSION': '1.0.0',
                     'SECURITY-APPNAME': EBAY_APP_ID,
                     'RESPONSE-DATA-FORMAT': 'XML',
-                    'keywords': 'pokemon',
+                    'keywords': 'pokemon charizard',
                     'categoryId': '183454',
-                    'paginationInput.entriesPerPage': '1'
+                    'paginationInput.entriesPerPage': '5'
                 }
                 
-                async with session.get(EBAY_FINDING_URL, params=test_params, timeout=10) as resp:
+                async with session.get(EBAY_FINDING_URL, params=test_params, timeout=15) as resp:
                     if resp.status == 200:
                         xml_data = await resp.text()
+                        logger.debug(f"Test API response preview: {xml_data[:300]}...")
+                        
                         # Try to parse to see if we got real data
                         try:
                             root = ET.fromstring(xml_data)
                             ns = {'ebay': 'http://www.ebay.com/marketplace/search/v1/services'}
-                            search_result = root.find('.//ebay:searchResult', ns)
-                            if search_result is not None:
-                                items = search_result.findall('ebay:item', ns)
-                                api_status = f"✅ Finding API working ({len(items)} test items)"
+                            
+                            # Check for errors
+                            ack = root.find('.//ebay:ack', ns)
+                            if ack is not None and ack.text != 'Success':
+                                error_msg = root.find('.//ebay:message', ns)
+                                error_text = error_msg.text if error_msg is not None else "Unknown error"
+                                api_status = f"❌ API Error: {error_text}"
                             else:
-                                api_status = "⚠️ API connected but no results"
-                        except:
-                            api_status = "⚠️ API connected but parse error"
+                                search_result = root.find('.//ebay:searchResult', ns)
+                                if search_result is not None:
+                                    count = search_result.get('count', '0')
+                                    api_status = f"✅ Finding API working ({count} test items found)"
+                                else:
+                                    api_status = "⚠️ API connected but no search results structure"
+                        except Exception as parse_error:
+                            api_status = f"⚠️ API connected but parse error: {parse_error}"
                     elif resp.status == 500:
-                        api_status = "❌ Rate limited (wait 1 hour)"
+                        api_status = "❌ Server error (possible rate limit)"
+                    elif resp.status == 403:
+                        api_status = "❌ Access denied - check API key"
                     else:
-                        api_status = f"❌ HTTP {resp.status}"
+                        text = await resp.text()
+                        api_status = f"❌ HTTP {resp.status}: {text[:100]}"
                         
         except asyncio.TimeoutError:
             api_status = "❌ Connection timeout"
         except Exception as e:
-            api_status = f"❌ Error: {type(e).__name__}"
+            api_status = f"❌ Error: {type(e).__name__}: {str(e)[:50]}"
         
         embed.add_field(name="🔗 eBay API Status", value=api_status, inline=True)
         
@@ -242,7 +301,7 @@ async def debug_command(ctx):
         
         embed.add_field(
             name="ℹ️ System Info", 
-            value="Using eBay Finding API for active market data",
+            value=f"Using eBay Finding API for active market data\nApp ID: {EBAY_APP_ID[:10]}...",
             inline=False
         )
         
@@ -300,16 +359,20 @@ async def price_check(ctx, *, card_name):
             
             all_data = {}
             conditions = ["raw", "psa 9", "psa 10"]
+            has_data = False
             
             # Fetch data for each condition
             for i, condition in enumerate(conditions):
                 if i > 0:  # Don't delay on first request
-                    await asyncio.sleep(2.0)  # 2 second delay between requests
+                    await asyncio.sleep(3.0)  # 3 second delay between requests
                     
                 query = build_query(card_name, condition)
                 items = await fetch_active_items(session, query, 8)
                 filtered_items = filter_items_by_condition(items, condition)
                 all_data[condition] = filtered_items
+                
+                if filtered_items:
+                    has_data = True
             
             # Set thumbnail (priority: raw > psa 10 > psa 9)
             for cond in ["raw", "psa 10", "psa 9"]:
@@ -317,81 +380,74 @@ async def price_check(ctx, *, card_name):
                     embed.set_thumbnail(url=all_data[cond][0]["image"])
                     break
             
-            # Calculate averages
-            raw_prices = [x['price'] for x in all_data.get('raw', [])]
-            psa9_prices = [x['price'] for x in all_data.get('psa 9', [])]
-            psa10_prices = [x['price'] for x in all_data.get('psa 10', [])]
-            
-            # Add price summary section
-            price_summary = []
-            
-            # Add average price fields with better formatting
-            if raw_prices:
-                avg_raw = mean(raw_prices)
-                min_raw = min(raw_prices)
-                max_raw = max(raw_prices)
-                price_summary.append(f"**Raw Ungraded**\n`${avg_raw:.2f}` avg • `${min_raw:.2f}` - `${max_raw:.2f}`\n*{len(raw_prices)} listings*")
-            
-            if psa9_prices:
-                avg_psa9 = mean(psa9_prices)
-                min_psa9 = min(psa9_prices)
-                max_psa9 = max(psa9_prices)
-                profit9 = (avg_psa9 - mean(raw_prices) - 18) if raw_prices else 0
-                profit_color = "🟢" if profit9 > 0 else "🔴"
-                price_summary.append(f"**PSA 9**\n`${avg_psa9:.2f}` avg • `${min_psa9:.2f}` - `${max_psa9:.2f}`\n*{len(psa9_prices)} listings*{' • ' + profit_color + f' ${profit9:.2f} profit' if raw_prices else ''}")
-            
-            if psa10_prices:
-                avg_psa10 = mean(psa10_prices)
-                min_psa10 = min(psa10_prices)
-                max_psa10 = max(psa10_prices)
-                profit10 = (avg_psa10 - mean(raw_prices) - 18) if raw_prices else 0
-                profit_color = "🟢" if profit10 > 0 else "🔴"
-                price_summary.append(f"**PSA 10**\n`${avg_psa10:.2f}` avg • `${min_psa10:.2f}` - `${max_psa10:.2f}`\n*{len(psa10_prices)} listings*{' • ' + profit_color + f' ${profit10:.2f} profit' if raw_prices else ''}")
-            
-            if price_summary:
-                for i, summary in enumerate(price_summary):
+            # Calculate averages and add price summary
+            if has_data:
+                raw_prices = [x['price'] for x in all_data.get('raw', [])]
+                psa9_prices = [x['price'] for x in all_data.get('psa 9', [])]
+                psa10_prices = [x['price'] for x in all_data.get('psa 10', [])]
+                
+                # Add average price fields with better formatting
+                if raw_prices:
+                    avg_raw = mean(raw_prices)
+                    min_raw = min(raw_prices)
+                    max_raw = max(raw_prices)
                     embed.add_field(
-                        name=f"{'🎴' if i == 0 else '🥈' if i == 1 else '🥇'}",
-                        value=summary,
+                        name="🎴 Raw Ungraded",
+                        value=f"`${avg_raw:.2f}` avg • `${min_raw:.2f}` - `${max_raw:.2f}`\n*{len(raw_prices)} listings*",
                         inline=True
                     )
-            
-            # Add separator line
-            if has_data:
+                
+                if psa9_prices:
+                    avg_psa9 = mean(psa9_prices)
+                    min_psa9 = min(psa9_prices)
+                    max_psa9 = max(psa9_prices)
+                    profit9 = (avg_psa9 - mean(raw_prices) - 18) if raw_prices else 0
+                    profit_color = "🟢" if profit9 > 0 else "🔴"
+                    embed.add_field(
+                        name="🥈 PSA 9",
+                        value=f"`${avg_psa9:.2f}` avg • `${min_psa9:.2f}` - `${max_psa9:.2f}`\n*{len(psa9_prices)} listings*{' • ' + profit_color + f' ${profit9:.2f} profit' if raw_prices else ''}",
+                        inline=True
+                    )
+                
+                if psa10_prices:
+                    avg_psa10 = mean(psa10_prices)
+                    min_psa10 = min(psa10_prices)
+                    max_psa10 = max(psa10_prices)
+                    profit10 = (avg_psa10 - mean(raw_prices) - 18) if raw_prices else 0
+                    profit_color = "🟢" if profit10 > 0 else "🔴"
+                    embed.add_field(
+                        name="🥇 PSA 10",
+                        value=f"`${avg_psa10:.2f}` avg • `${min_psa10:.2f}` - `${max_psa10:.2f}`\n*{len(psa10_prices)} listings*{' • ' + profit_color + f' ${profit10:.2f} profit' if raw_prices else ''}",
+                        inline=True
+                    )
+                
+                # Add separator line
                 embed.add_field(name="\u200b", value="─────────────────────", inline=False)
-            
-            # Add individual listings with cleaner formatting
-            listing_sections = []
-            for condition, items in all_data.items():
-                if items:
-                    has_data = True
-                    
-                    # Format listings with cleaner design
-                    listings = []
-                    for i, item in enumerate(items[:3], 1):
-                        title_short = item['title'][:35] + "..." if len(item['title']) > 35 else item['title']
-                        type_indicator = "Auction" if item.get('listing_type') == 'Auction' else "Buy Now"
-                        listings.append(f"**${item['price']:.2f}** • {type_indicator}\n[{title_short}]({item['url']})")
-                    
-                    condition_names = {"raw": "Raw Ungraded", "psa 9": "PSA 9", "psa 10": "PSA 10"}
-                    listing_sections.append({
-                        "name": condition_names.get(condition, condition.upper()),
-                        "value": "\n\n".join(listings)
-                    })
-            
-            # Add listings in a cleaner layout
-            for section in listing_sections:
-                embed.add_field(
-                    name=f"📋 {section['name']} Listings",
-                    value=section['value'],
-                    inline=len(listing_sections) <= 2  # Inline for 1-2 sections, full width for 3
-                )
+                
+                # Add individual listings with cleaner formatting
+                for condition, items in all_data.items():
+                    if items:
+                        listings = []
+                        for item in items[:3]:
+                            title_short = item['title'][:35] + "..." if len(item['title']) > 35 else item['title']
+                            type_indicator = "🔨" if item.get('listing_type') == 'Auction' else "💲"
+                            price_display = f"${item['price']:.2f}"
+                            if item.get('shipping', 0) > 0:
+                                price_display += f" (+${item['shipping']:.2f} ship)"
+                            listings.append(f"{type_indicator} **{price_display}**\n[{title_short}]({item['url']})")
+                        
+                        condition_names = {"raw": "Raw Ungraded", "psa 9": "PSA 9", "psa 10": "PSA 10"}
+                        embed.add_field(
+                            name=f"📋 {condition_names.get(condition, condition.upper())} Listings",
+                            value="\n\n".join(listings),
+                            inline=len(all_data) <= 2
+                        )
             
             if not has_data:
                 embed.color = 0xE74C3C
                 embed.add_field(
                     name="🔍 No Results Found",
-                    value="No current listings match your search.\n\n**Try these tips:**\n• Use simpler terms (e.g., `Charizard` instead of full set info)\n• Check spelling\n• Try the English card name",
+                    value="No current listings match your search.\n\n**Try these tips:**\n• Use simpler terms (e.g., `Charizard` instead of full set info)\n• Check spelling\n• Try the English card name\n• Remove extra words like 'holo' or 'rare'",
                     inline=False
                 )
             else:
@@ -427,25 +483,25 @@ async def price_check_error(ctx, error):
 @bot.command(name='info')
 async def info_command(ctx):
     """Show bot information and usage"""
-    help_embed = discord.Embed(
+    embed = discord.Embed(
         title="🎴 Pokemon Card Price Bot",
         description="Get current Pokemon card prices from eBay active listings!",
         color=0xf39c12
     )
     
-    help_embed.add_field(
+    embed.add_field(
         name="📋 Commands",
         value="`!price <card name>` - Check current card prices\n`!debug` - Check bot status\n`!test` - Simple bot test\n`!info` - Show this message",
         inline=False
     )
     
-    help_embed.add_field(
+    embed.add_field(
         name="💡 Tips",
         value="• Use simple names (e.g., 'Charizard Base Set')\n• Shows current asking prices from active listings\n• Bot shows RAW, PSA 9, and PSA 10 prices\n• 🔨 = Auction, 💲 = Buy It Now",
         inline=False
     )
     
-    help_embed.add_field(
+    embed.add_field(
         name="⚠️ Important Note",
         value="Shows **current asking prices** from active listings. These are what sellers are asking, not necessarily what cards are selling for.",
         inline=False
