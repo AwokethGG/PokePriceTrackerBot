@@ -18,7 +18,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")  # Now using Client ID for Browse API
 EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")  # Client Secret for OAuth
-EBAY_ENVIRONMENT = os.getenv("EBAY_ENVIRONMENT", "PRODUCTION")  # SANDBOX or PRODUCTION
+EBAY_ENVIRONMENT = os.getenv("EBAY_ENVIRONMENT", "SANDBOX")  # Changed default to SANDBOX
 PRICE_CHECK_CHANNEL_ID = os.getenv("PRICE_CHECK_CHANNEL_ID")
 
 if not TOKEN or not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
@@ -35,9 +35,11 @@ bot = commands.Bot(command_prefix="!", description=description, intents=intents)
 if EBAY_ENVIRONMENT.upper() == "SANDBOX":
     EBAY_OAUTH_URL = "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
     EBAY_BROWSE_URL = "https://api.sandbox.ebay.com/buy/browse/v1/item_summary/search"
+    logger.info("🧪 Running in SANDBOX mode - using test data")
 else:
     EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
     EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+    logger.info("🚀 Running in PRODUCTION mode - using live data")
 
 # Global variable to store OAuth token
 oauth_token = None
@@ -67,7 +69,7 @@ async def get_oauth_token():
         
         data = f'grant_type=client_credentials&scope={scope_encoded}'
         
-        logger.info(f"Attempting OAuth with Client ID: {EBAY_CLIENT_ID[:8]}...")
+        logger.info(f"Attempting OAuth with Client ID: {EBAY_CLIENT_ID[:8]}... in {EBAY_ENVIRONMENT} environment")
         
         async with aiohttp.ClientSession() as session:
             async with session.post(EBAY_OAUTH_URL, headers=headers, data=data, timeout=15) as resp:
@@ -80,13 +82,13 @@ async def get_oauth_token():
                         expires_in = token_data.get('expires_in', 3600)
                         from datetime import timedelta
                         token_expires = datetime.now() + timedelta(seconds=expires_in - 60)
-                        logger.info("Successfully obtained OAuth token")
+                        logger.info(f"Successfully obtained OAuth token for {EBAY_ENVIRONMENT}")
                         return oauth_token
                     except json.JSONDecodeError as e:
                         logger.error(f"Invalid JSON in OAuth response: {e}")
                         return None
                 else:
-                    logger.error(f"OAuth failed - Status: {resp.status}")
+                    logger.error(f"OAuth failed - Status: {resp.status} (Environment: {EBAY_ENVIRONMENT})")
                     logger.error(f"Response: {response_text}")
                     
                     # Try to parse error details
@@ -128,18 +130,23 @@ async def fetch_browse_items(session, query, max_entries=15):
             'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
         }
         
-        params = {
-            'q': query,
-            'limit': str(max_entries),
-            'sort': 'newlyListed',  # Sort by newest listings
-            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},price:[0.50..5000]'  # Reduced max price for sandbox
-        }
+        # Sandbox has less strict filtering
+        if EBAY_ENVIRONMENT.upper() == "SANDBOX":
+            params = {
+                'q': query,
+                'limit': str(max_entries),
+                'sort': 'newlyListed',
+                'filter': 'price:[0.50..5000]'  # Simplified for sandbox
+            }
+        else:
+            params = {
+                'q': query,
+                'limit': str(max_entries),
+                'sort': 'newlyListed',
+                'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},price:[0.50..5000],categoryIds:{183454}'  # Pokemon cards category
+            }
         
-        # Add category filter only if not in sandbox (sandbox may have different categories)
-        if EBAY_ENVIRONMENT.upper() != "SANDBOX":
-            params['category_ids'] = '183454'  # Pokemon cards category
-        
-        logger.info(f"Searching eBay Browse API: {query}")
+        logger.info(f"Searching eBay Browse API ({EBAY_ENVIRONMENT}): {query}")
         
         async with session.get(EBAY_BROWSE_URL, headers=headers, params=params, timeout=30) as resp:
             if resp.status == 200:
@@ -209,8 +216,8 @@ def parse_browse_response(data):
                 # Get condition
                 condition = item.get('condition', 'Unknown')
                 
-                # Only include items with reasonable prices (relaxed for sandbox)
-                max_price = 5000 if EBAY_ENVIRONMENT.upper() == "SANDBOX" else 10000
+                # Only include items with reasonable prices
+                max_price = 5000  # Same for both environments
                 if 0.50 <= total_price <= max_price:
                     items.append({
                         "title": title,
@@ -228,7 +235,7 @@ def parse_browse_response(data):
                 logger.warning(f"Error parsing Browse API item: {e}")
                 continue
         
-        logger.info(f"Parsed {len(items)} valid items from eBay Browse API")
+        logger.info(f"Parsed {len(items)} valid items from eBay Browse API ({EBAY_ENVIRONMENT})")
         return items
         
     except Exception as e:
@@ -259,18 +266,49 @@ def filter_items_by_condition(items, condition):
 async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready! Logged in as {bot.user}')
+    print(f'Environment: {EBAY_ENVIRONMENT.upper()}')
     
     # Test OAuth token on startup
     token = await get_oauth_token()
     if token:
-        print("✅ Successfully connected to eBay Browse API")
+        print(f"✅ Successfully connected to eBay Browse API ({EBAY_ENVIRONMENT})")
+        if EBAY_ENVIRONMENT.upper() == "SANDBOX":
+            print("🧪 Using SANDBOX environment - test data only")
     else:
-        print("❌ Failed to connect to eBay Browse API")
+        print(f"❌ Failed to connect to eBay Browse API ({EBAY_ENVIRONMENT})")
 
 @bot.command(name='test')
 async def simple_test(ctx):
     """Simple test command"""
-    await ctx.send("✅ Bot is working! Ready to check card prices.")
+    env_status = "🧪 SANDBOX (Test Data)" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else "🚀 PRODUCTION (Live Data)"
+    await ctx.send(f"✅ Bot is working! Environment: {env_status}")
+
+@bot.command(name='setenv')
+async def set_environment(ctx, env=None):
+    """Show current environment or instructions to change it"""
+    if not env:
+        current_env = "🧪 SANDBOX (Test Data)" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else "🚀 PRODUCTION (Live Data)"
+        embed = discord.Embed(
+            title="🌐 Environment Settings",
+            description=f"**Current Environment**: {current_env}",
+            color=0x2C2F33
+        )
+        
+        embed.add_field(
+            name="📝 To Change Environment",
+            value="Set the `EBAY_ENVIRONMENT` variable in Railway:\n• `SANDBOX` - Test data only\n• `PRODUCTION` - Live eBay data\n\nThen restart the bot.",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚠️ Important",
+            value="Make sure your eBay credentials match the environment:\n• Sandbox credentials for SANDBOX\n• Production credentials for PRODUCTION",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("Environment can only be changed via Railway environment variables. Use `!setenv` to see current status.")
 
 @bot.command(name='sandbox')
 async def test_sandbox(ctx):
@@ -416,7 +454,7 @@ async def credential_check(ctx):
         # Instructions
         embed.add_field(
             name="📝 Quick Checklist",
-            value="1. Go to https://developer.ebay.com/my/keys\n2. Select the right environment (Sandbox/Production)\n3. Copy 'App ID (Client ID)' to EBAY_CLIENT_ID\n4. Copy 'Cert ID (Client Secret)' to EBAY_CLIENT_SECRET\n5. Set EBAY_ENVIRONMENT=PRODUCTION (or SANDBOX)",
+            value="1. Go to https://developer.ebay.com/my/keys\n2. Select the right environment (Sandbox/Production)\n3. Copy 'App ID (Client ID)' to EBAY_CLIENT_ID\n4. Copy 'Cert ID (Client Secret)' to EBAY_CLIENT_SECRET\n5. Set EBAY_ENVIRONMENT=SANDBOX (or PRODUCTION)",
             inline=False
         )
         
@@ -450,7 +488,7 @@ async def test_auth_detailed(ctx):
         
         embed.add_field(
             name="📋 Request Details",
-            value=f"**URL**: `{EBAY_OAUTH_URL}`\n**Scope**: `https://api.ebay.com/oauth/api_scope`\n**Grant Type**: `client_credentials`",
+            value=f"**URL**: `{EBAY_OAUTH_URL}`\n**Environment**: `{EBAY_ENVIRONMENT}`\n**Scope**: `https://api.ebay.com/oauth/api_scope`\n**Grant Type**: `client_credentials`",
             inline=False
         )
         
@@ -470,7 +508,7 @@ async def test_auth_detailed(ctx):
                         token_preview = token_data['access_token'][:30] + "..."
                         embed.add_field(
                             name="✅ Success",
-                            value=f"Token: `{token_preview}`\nExpires: `{token_data.get('expires_in')} seconds`",
+                            value=f"Token: `{token_preview}`\nExpires: `{token_data.get('expires_in')} seconds`\nEnvironment: `{EBAY_ENVIRONMENT}`",
                             inline=False
                         )
                         embed.color = 0x1F8B4C
@@ -497,9 +535,9 @@ async def test_auth_detailed(ctx):
                         error_desc = error_data.get('error_description', 'No description')
                         
                         common_fixes = {
-                            'invalid_client': '• Check your Client ID and Client Secret\n• Ensure credentials match the environment (Sandbox vs Production)',
+                            'invalid_client': f'• Check your Client ID and Client Secret\n• Ensure credentials match the environment ({EBAY_ENVIRONMENT})',
                             'invalid_scope': '• Your app may not have Browse API access\n• Check your app permissions in Developer Console',
-                            'unauthorized_client': '• Your app may not be approved for this environment\n• Check app status in Developer Console'
+                            'unauthorized_client': f'• Your app may not be approved for {EBAY_ENVIRONMENT} environment\n• Check app status in Developer Console'
                         }
                         
                         if error_type in common_fixes:
@@ -544,9 +582,9 @@ async def oauth_debug(ctx):
         token_result = await get_oauth_token()
         if token_result:
             token_preview = f"`{token_result[:20]}...`"
-            oauth_status = f"✅ **Success**\nToken: {token_preview}"
+            oauth_status = f"✅ **Success**\nToken: {token_preview}\nEnvironment: {EBAY_ENVIRONMENT}"
         else:
-            oauth_status = "❌ **Failed** - Run this command again to see detailed error info"
+            oauth_status = f"❌ **Failed** - Run `!testauth` for detailed error info\nEnvironment: {EBAY_ENVIRONMENT}"
         
         embed.add_field(
             name="🔐 OAuth Token Test",
@@ -557,7 +595,7 @@ async def oauth_debug(ctx):
         # Add troubleshooting tips
         embed.add_field(
             name="🛠️ Troubleshooting",
-            value="1. Verify your eBay Developer Account is active\n2. Ensure your app has 'Browse API' access\n3. Check that credentials are for Production (not Sandbox)\n4. Make sure Client ID/Secret are correct",
+            value=f"1. Verify your eBay Developer Account is active\n2. Ensure your app has 'Browse API' access\n3. Check that credentials are for {EBAY_ENVIRONMENT} environment\n4. Make sure Client ID/Secret are correct",
             inline=False
         )
         
@@ -584,6 +622,7 @@ async def debug_command(ctx):
         env_status.append(f"{'🟢' if EBAY_CLIENT_ID else '🔴'} **eBay Client ID**")
         env_status.append(f"{'🟢' if EBAY_CLIENT_SECRET else '🔴'} **eBay Client Secret**")
         env_status.append(f"{'🟢' if PRICE_CHECK_CHANNEL_ID else '🟡'} **Channel Restriction**")
+        env_status.append(f"🌐 **Environment**: `{EBAY_ENVIRONMENT}`")
         
         embed.add_field(
             name="📋 Configuration",
@@ -603,17 +642,25 @@ async def debug_command(ctx):
                         'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
                     }
                     
-                    params = {
-                        'q': 'pokemon charizard',
-                        'category_ids': '183454',
-                        'limit': '5'
-                    }
+                    # Different params for different environments
+                    if EBAY_ENVIRONMENT.upper() == "SANDBOX":
+                        params = {
+                            'q': 'pokemon charizard',
+                            'limit': '5'
+                        }
+                    else:
+                        params = {
+                            'q': 'pokemon charizard',
+                            'category_ids': '183454',
+                            'limit': '5'
+                        }
                     
                     async with session.get(EBAY_BROWSE_URL, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             item_count = len(data.get('itemSummaries', []))
-                            api_status = f"✅ Browse API working ({item_count} test items)"
+                            env_indicator = "🧪" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else "🚀"
+                            api_status = f"✅ {env_indicator} Browse API working ({item_count} test items)"
                         elif resp.status == 401:
                             api_status = "❌ Authentication failed - check credentials"
                         elif resp.status == 403:
@@ -622,7 +669,7 @@ async def debug_command(ctx):
                             error_text = await resp.text()
                             api_status = f"❌ API Error: HTTP {resp.status} - {error_text[:50]}"
             else:
-                api_status = "❌ OAuth token acquisition failed"
+                api_status = f"❌ OAuth token acquisition failed ({EBAY_ENVIRONMENT})"
                         
         except asyncio.TimeoutError:
             api_status = "❌ Connection timeout"
@@ -634,9 +681,10 @@ async def debug_command(ctx):
         # Add separator
         embed.add_field(name="\u200b", value="\u200b", inline=False)
         
+        env_desc = "🧪 Sandbox (Test Data)" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else "🚀 Production (Live Data)"
         embed.add_field(
             name="ℹ️ System Info", 
-            value=f"Using eBay Browse API ({EBAY_ENVIRONMENT} environment)\nOAuth 2.0 Authentication",
+            value=f"Using eBay Browse API ({env_desc})\nOAuth 2.0 Authentication",
             inline=False
         )
         
@@ -669,9 +717,10 @@ async def price_check(ctx, *, card_name):
     
     card_name = card_name.strip()
     
-    # Send initial "searching" message
+    # Send initial "searching" message with environment indicator
+    env_indicator = "🧪 Test Data" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else "🚀 Live Data"
     searching_embed = discord.Embed(
-        description=f"🔍 Analyzing market data for **{card_name.title()}**...\n*Using eBay Browse API*",
+        description=f"🔍 Analyzing market data for **{card_name.title()}**...\n*Using eBay Browse API ({env_indicator})*",
         color=0x99AAB5
     )
     searching_msg = await ctx.send(embed=searching_embed)
@@ -686,9 +735,13 @@ async def price_check(ctx, *, card_name):
                 timestamp=datetime.now(timezone.utc)
             )
             
-            # Set author field for branding
+            # Set author field for branding with environment indicator
+            author_name = f"PokéBrief Market Data ({EBAY_ENVIRONMENT.title()})"
+            if EBAY_ENVIRONMENT.upper() == "SANDBOX":
+                author_name += " - Test Data Only"
+            
             embed.set_author(
-                name="PokéBrief Market Data", 
+                name=author_name, 
                 icon_url="https://cdn.discordapp.com/emojis/658538492321595392.png"
             )
             
@@ -780,9 +833,10 @@ async def price_check(ctx, *, card_name):
             
             if not has_data:
                 embed.color = 0xE74C3C
+                sandbox_note = " (Note: Sandbox has limited test data)" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else ""
                 embed.add_field(
                     name="🔍 No Results Found",
-                    value="No current listings match your search.\n\n**Try these tips:**\n• Use simpler terms (e.g., `Charizard` instead of full set info)\n• Check spelling\n• Try the English card name\n• Remove extra words like 'holo' or 'rare'",
+                    value=f"No current listings match your search.{sandbox_note}\n\n**Try these tips:**\n• Use simpler terms (e.g., `Charizard` instead of full set info)\n• Check spelling\n• Try the English card name\n• Remove extra words like 'holo' or 'rare'",
                     inline=False
                 )
             else:
@@ -801,13 +855,14 @@ async def price_check(ctx, *, card_name):
             
     except Exception as e:
         logger.error(f"Error in price command: {e}")
+        env_note = " This may be due to limited test data in Sandbox environment." if EBAY_ENVIRONMENT.upper() == "SANDBOX" else ""
         error_embed = discord.Embed(
             title="Service Temporarily Unavailable",
-            description=f"Unable to retrieve market data for **{card_name}** at this time.\n\nThis may be due to API authentication issues. Please try again in a few minutes.",
+            description=f"Unable to retrieve market data for **{card_name}** at this time.{env_note}\n\nThis may be due to API authentication issues. Please try again in a few minutes.",
             color=0xE74C3C,
             timestamp=datetime.now(timezone.utc)
         )
-        error_embed.set_footer(text="PokéBrief • Error Report")
+        error_embed.set_footer(text=f"PokéBrief • Error Report ({EBAY_ENVIRONMENT})")
         await searching_msg.edit(content=None, embed=error_embed)
 
 @price_check.error
@@ -822,6 +877,8 @@ async def price_check_error(ctx, error):
 @bot.command(name='info')
 async def info_command(ctx):
     """Show bot information and usage"""
+    env_desc = "🧪 Sandbox (Test Data)" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else "🚀 Production (Live Data)"
+    
     embed = discord.Embed(
         title="🎴 Pokemon Card Price Bot",
         description="Get current Pokemon card prices from eBay using the latest Browse API!",
@@ -830,7 +887,7 @@ async def info_command(ctx):
     
     embed.add_field(
         name="📋 Commands",
-        value="`!price <card name>` - Check current card prices\n`!debug` - Check bot status\n`!test` - Simple bot test\n`!info` - Show this message",
+        value="`!price <card name>` - Check current card prices\n`!debug` - Check bot status\n`!test` - Simple bot test\n`!setenv` - Check current environment\n`!info` - Show this message",
         inline=False
     )
     
@@ -842,13 +899,13 @@ async def info_command(ctx):
     
     embed.add_field(
         name="🆕 What's New",
-        value=f"Updated to use eBay's Browse API\nCurrently running in **{EBAY_ENVIRONMENT.upper()}** mode" + (" (Test Data)" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else ""),
+        value=f"Updated to use eBay's Browse API\nCurrently running in **{env_desc}**",
         inline=False
     )
     
     embed.add_field(
         name="⚠️ Important Note",
-        value="Shows **current asking prices** from active listings. These are what sellers are asking, not necessarily what cards are selling for.",
+        value="Shows **current asking prices** from active listings. These are what sellers are asking, not necessarily what cards are selling for." + (" Sandbox shows test data only." if EBAY_ENVIRONMENT.upper() == "SANDBOX" else ""),
         inline=False
     )
     
