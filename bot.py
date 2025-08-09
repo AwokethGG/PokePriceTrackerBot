@@ -47,37 +47,54 @@ async def get_oauth_token():
         return oauth_token
     
     try:
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': f'Basic {EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}'
-        }
-        
-        # Convert to base64 for basic auth
+        # Convert credentials to base64 for basic auth
         import base64
         auth_string = base64.b64encode(f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}".encode()).decode()
-        headers['Authorization'] = f'Basic {auth_string}'
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': f'Basic {auth_string}'
+        }
         
         data = {
             'grant_type': 'client_credentials',
             'scope': 'https://api.ebay.com/oauth/api_scope'
         }
         
+        logger.info(f"Attempting OAuth with Client ID: {EBAY_CLIENT_ID[:8]}...")
+        
         async with aiohttp.ClientSession() as session:
             async with session.post(EBAY_OAUTH_URL, headers=headers, data=data, timeout=15) as resp:
+                response_text = await resp.text()
+                
                 if resp.status == 200:
-                    token_data = await resp.json()
-                    oauth_token = token_data['access_token']
-                    expires_in = token_data.get('expires_in', 3600)
-                    token_expires = datetime.now() + datetime.timedelta(seconds=expires_in - 60)  # Refresh 1 min early
-                    logger.info("Successfully obtained OAuth token")
-                    return oauth_token
+                    try:
+                        token_data = json.loads(response_text)
+                        oauth_token = token_data['access_token']
+                        expires_in = token_data.get('expires_in', 3600)
+                        from datetime import timedelta
+                        token_expires = datetime.now() + timedelta(seconds=expires_in - 60)
+                        logger.info("Successfully obtained OAuth token")
+                        return oauth_token
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Invalid JSON in OAuth response: {e}")
+                        return None
                 else:
-                    error_text = await resp.text()
-                    logger.error(f"OAuth error ({resp.status}): {error_text}")
+                    logger.error(f"OAuth failed - Status: {resp.status}")
+                    logger.error(f"Response: {response_text}")
+                    
+                    # Try to parse error details
+                    try:
+                        error_data = json.loads(response_text)
+                        error_msg = error_data.get('error_description', error_data.get('error', 'Unknown error'))
+                        logger.error(f"OAuth error details: {error_msg}")
+                    except:
+                        pass
+                    
                     return None
                     
     except Exception as e:
-        logger.error(f"Error getting OAuth token: {e}")
+        logger.error(f"Exception getting OAuth token: {e}")
         return None
 
 def build_query(card_name, condition):
@@ -245,6 +262,55 @@ async def simple_test(ctx):
     """Simple test command"""
     await ctx.send("✅ Bot is working! Ready to check card prices.")
 
+@bot.command(name='oauth')
+async def oauth_debug(ctx):
+    """Debug OAuth authentication specifically"""
+    try:
+        embed = discord.Embed(
+            title="OAuth 2.0 Debug",
+            description="Testing eBay API authentication",
+            color=0x2C2F33,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Check credentials
+        creds_status = []
+        creds_status.append(f"{'🟢' if EBAY_CLIENT_ID else '🔴'} **Client ID**: `{EBAY_CLIENT_ID[:8] if EBAY_CLIENT_ID else 'Missing'}...`")
+        creds_status.append(f"{'🟢' if EBAY_CLIENT_SECRET else '🔴'} **Client Secret**: `{'✓ Set' if EBAY_CLIENT_SECRET else 'Missing'}`")
+        
+        embed.add_field(
+            name="🔑 Credentials Check",
+            value="\n".join(creds_status),
+            inline=False
+        )
+        
+        # Test OAuth
+        token = await get_oauth_token()
+        if token:
+            token_preview = f"`{token[:20]}...`"
+            oauth_status = f"✅ **Success**\nToken: {token_preview}"
+        else:
+            oauth_status = "❌ **Failed** - Check logs for details"
+        
+        embed.add_field(
+            name="🔐 OAuth Token Test",
+            value=oauth_status,
+            inline=False
+        )
+        
+        # Add troubleshooting tips
+        embed.add_field(
+            name="🛠️ Troubleshooting",
+            value="1. Verify your eBay Developer Account is active\n2. Ensure your app has 'Browse API' access\n3. Check that credentials are for Production (not Sandbox)\n4. Make sure Client ID/Secret are correct",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        await ctx.send(f"❌ OAuth debug failed: {str(e)}")
+        logger.error(f"OAuth debug error: {e}")
+
 @bot.command(name='debug')
 async def debug_command(ctx):
     """Debug command to check bot status"""
@@ -292,16 +358,20 @@ async def debug_command(ctx):
                             data = await resp.json()
                             item_count = len(data.get('itemSummaries', []))
                             api_status = f"✅ Browse API working ({item_count} test items)"
+                        elif resp.status == 401:
+                            api_status = "❌ Authentication failed - check credentials"
+                        elif resp.status == 403:
+                            api_status = "❌ Access denied - check API permissions"
                         else:
                             error_text = await resp.text()
-                            api_status = f"❌ API Error: HTTP {resp.status}"
+                            api_status = f"❌ API Error: HTTP {resp.status} - {error_text[:50]}"
             else:
-                api_status = "❌ OAuth authentication failed"
+                api_status = "❌ OAuth token acquisition failed"
                         
         except asyncio.TimeoutError:
             api_status = "❌ Connection timeout"
         except Exception as e:
-            api_status = f"❌ Error: {type(e).__name__}"
+            api_status = f"❌ Error: {type(e).__name__}: {str(e)[:50]}"
         
         embed.add_field(name="🔗 eBay Browse API", value=api_status, inline=True)
         
