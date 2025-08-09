@@ -18,6 +18,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 EBAY_CLIENT_ID = os.getenv("EBAY_CLIENT_ID")  # Now using Client ID for Browse API
 EBAY_CLIENT_SECRET = os.getenv("EBAY_CLIENT_SECRET")  # Client Secret for OAuth
+EBAY_ENVIRONMENT = os.getenv("EBAY_ENVIRONMENT", "PRODUCTION")  # SANDBOX or PRODUCTION
 PRICE_CHECK_CHANNEL_ID = os.getenv("PRICE_CHECK_CHANNEL_ID")
 
 if not TOKEN or not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
@@ -30,9 +31,13 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", description=description, intents=intents)
 
-# eBay Browse API endpoints
-EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
-EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+# eBay Browse API endpoints - environment dependent
+if EBAY_ENVIRONMENT.upper() == "SANDBOX":
+    EBAY_OAUTH_URL = "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
+    EBAY_BROWSE_URL = "https://api.sandbox.ebay.com/buy/browse/v1/item_summary/search"
+else:
+    EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+    EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
 # Global variable to store OAuth token
 oauth_token = None
@@ -56,10 +61,11 @@ async def get_oauth_token():
             'Authorization': f'Basic {auth_string}'
         }
         
-        data = {
-            'grant_type': 'client_credentials',
-            'scope': 'https://api.ebay.com/oauth/api_scope'
-        }
+        # URL encode the scope as required by eBay
+        import urllib.parse
+        scope_encoded = urllib.parse.quote('https://api.ebay.com/oauth/api_scope')
+        
+        data = f'grant_type=client_credentials&scope={scope_encoded}'
         
         logger.info(f"Attempting OAuth with Client ID: {EBAY_CLIENT_ID[:8]}...")
         
@@ -277,6 +283,8 @@ async def oauth_debug(ctx):
         creds_status = []
         creds_status.append(f"{'🟢' if EBAY_CLIENT_ID else '🔴'} **Client ID**: `{EBAY_CLIENT_ID[:8] if EBAY_CLIENT_ID else 'Missing'}...`")
         creds_status.append(f"{'🟢' if EBAY_CLIENT_SECRET else '🔴'} **Client Secret**: `{'✓ Set' if EBAY_CLIENT_SECRET else 'Missing'}`")
+        creds_status.append(f"🌐 **Environment**: `{EBAY_ENVIRONMENT}`")
+        creds_status.append(f"🔗 **OAuth URL**: `{EBAY_OAUTH_URL}`")
         
         embed.add_field(
             name="🔑 Credentials Check",
