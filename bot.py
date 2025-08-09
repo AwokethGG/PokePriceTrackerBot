@@ -108,11 +108,11 @@ def build_query(card_name, condition):
     card_name = card_name.replace('"', '').strip()
     
     if condition == "raw":
-        # For raw cards, exclude grading terms
-        return f"{card_name} pokemon -psa -cgc -bgs -beckett -graded"
+        # For raw cards, exclude grading terms - simplified for sandbox
+        return f"{card_name} -psa -cgc -bgs -graded"
     else:
         # For graded cards, include the grade
-        return f"{card_name} pokemon {condition}"
+        return f"{card_name} {condition}"
 
 async def fetch_browse_items(session, query, max_entries=15):
     """Fetch items from eBay Browse API"""
@@ -130,11 +130,14 @@ async def fetch_browse_items(session, query, max_entries=15):
         
         params = {
             'q': query,
-            'category_ids': '183454',  # Pokemon cards category
             'limit': str(max_entries),
             'sort': 'newlyListed',  # Sort by newest listings
-            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},price:[0.50..10000],conditionIds:{1000|2000|2500|3000|4000|5000|6000}'
+            'filter': 'buyingOptions:{FIXED_PRICE|AUCTION},price:[0.50..5000]'  # Reduced max price for sandbox
         }
+        
+        # Add category filter only if not in sandbox (sandbox may have different categories)
+        if EBAY_ENVIRONMENT.upper() != "SANDBOX":
+            params['category_ids'] = '183454'  # Pokemon cards category
         
         logger.info(f"Searching eBay Browse API: {query}")
         
@@ -206,8 +209,9 @@ def parse_browse_response(data):
                 # Get condition
                 condition = item.get('condition', 'Unknown')
                 
-                # Only include items with reasonable prices
-                if 0.50 <= total_price <= 10000:
+                # Only include items with reasonable prices (relaxed for sandbox)
+                max_price = 5000 if EBAY_ENVIRONMENT.upper() == "SANDBOX" else 10000
+                if 0.50 <= total_price <= max_price:
                     items.append({
                         "title": title,
                         "url": item_web_url,
@@ -632,7 +636,7 @@ async def debug_command(ctx):
         
         embed.add_field(
             name="ℹ️ System Info", 
-            value="Using eBay Browse API (Finding API replacement)\nOAuth 2.0 Authentication",
+            value=f"Using eBay Browse API ({EBAY_ENVIRONMENT} environment)\nOAuth 2.0 Authentication",
             inline=False
         )
         
@@ -677,7 +681,7 @@ async def price_check(ctx, *, card_name):
             # Create main embed with professional styling
             embed = discord.Embed(
                 title=card_name.title(),
-                description="**Current Market Analysis** • Live eBay Listings",
+                description=f"**Current Market Analysis** • {EBAY_ENVIRONMENT.title()} eBay Data",
                 color=0x1F8B4C,
                 timestamp=datetime.now(timezone.utc)
             )
@@ -783,8 +787,12 @@ async def price_check(ctx, *, card_name):
                 )
             else:
                 # Add professional footer
+                footer_text = f"PokéBrief • {EBAY_ENVIRONMENT.title()} eBay data via Browse API • Prices include shipping"
+                if EBAY_ENVIRONMENT.upper() == "SANDBOX":
+                    footer_text += " • Test Data Only"
+                
                 embed.set_footer(
-                    text="PokéBrief • Live market data via eBay Browse API • Prices include shipping",
+                    text=footer_text,
                     icon_url="https://cdn.discordapp.com/emojis/658538492321595392.png"
                 )
             
@@ -834,7 +842,7 @@ async def info_command(ctx):
     
     embed.add_field(
         name="🆕 What's New",
-        value="Updated to use eBay's latest Browse API (Finding API was discontinued in Feb 2025)",
+        value=f"Updated to use eBay's Browse API\nCurrently running in **{EBAY_ENVIRONMENT.upper()}** mode" + (" (Test Data)" if EBAY_ENVIRONMENT.upper() == "SANDBOX" else ""),
         inline=False
     )
     
