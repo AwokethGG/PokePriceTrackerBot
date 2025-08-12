@@ -427,8 +427,8 @@ async def debug_command(ctx):
     
     await ctx.send(embed=embed)
 
-@bot.command(name='help')
-async def help_command(ctx):
+@bot.command(name='info')
+async def info_command(ctx):
     """Show help information"""
     embed = discord.Embed(
         title="🎴 Pokemon Card Price Bot",
@@ -438,7 +438,7 @@ async def help_command(ctx):
     
     embed.add_field(
         name="📋 Commands",
-        value="`!price <card name>` - Check card prices\n`!test` - Test bot status\n`!debug` - Show debug info\n`!help` - Show this help",
+        value="`!price <card name>` - Check card prices\n`!test` - Test bot status\n`!debug` - Show debug info\n`!info` - Show this help",
         inline=False
     )
     
